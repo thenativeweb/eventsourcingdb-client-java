@@ -29,7 +29,7 @@ class StreamTest {
                 var events = new Client(server.url(), "secret").readEvents("/a", new ReadEventsOptions(false))) {
             var event = events.toList().getFirst();
 
-            assertEquals("<&> é 😀", event.data().path("z").asString());
+            assertEquals(Lines.SPECIAL_CHARACTERS, event.data().path("z").asString());
             assertEquals(Optional.of("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"), event.traceParent());
             event.verifyHash();
         }
