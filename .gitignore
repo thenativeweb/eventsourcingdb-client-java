@@ -1,0 +1,7 @@
+# Build directories
+build/
+.gradle/
+.kotlin/
+
+# OS generated files and directories
+.DS_Store

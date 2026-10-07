@@ -1,0 +1,26 @@
+name: QA
+
+on: pull_request
+
+concurrency:
+  group: qa-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    name: QA
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - name: Clone repository
+      uses: actions/checkout@v7.0.1
+    - name: Use Java
+      uses: actions/setup-java@v6.0.1
+      with:
+        distribution: temurin
+        java-version: '21'
+    - name: Use Gradle
+      uses: gradle/actions/setup-gradle@v6.4.0
+    - name: Run QA
+      run: make qa
