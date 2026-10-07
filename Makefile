@@ -8,7 +8,7 @@ endif
 qa: analyze test
 
 analyze:
-	@./gradlew spotlessCheck compileJava compileTestJava
+	@./gradlew spotlessCheck compileJava compileTestJava javadoc
 
 format:
 	@./gradlew spotlessApply
