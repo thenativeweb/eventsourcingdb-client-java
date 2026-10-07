@@ -9,7 +9,6 @@ import io.eventsourcingdb.Operations.Operation;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -24,6 +23,12 @@ import org.junit.jupiter.params.provider.MethodSource;
 // the thread that makes it, and a stream by closing it. Either way, the
 // request then ends with a CancellationException, so that an aborted read can
 // be told apart from a complete one.
+//
+// The timeout of this class must not cover starting a container: if it
+// interrupts Testcontainers while it looks for Docker, Testcontainers never
+// tries again, and every later test that needs a container fails. Tests that
+// need EventSourcingDB itself start it in @BeforeEach elsewhere, e.g. in
+// WriteEventsTest, which this timeout does not cover.
 @Timeout(10)
 class CancellationTest {
     static List<Operation> all() {
@@ -121,29 +126,6 @@ class CancellationTest {
 
             assertThrows(CancellationException.class, iterator::hasNext);
             assertEquals(0, server.requestCount());
-        }
-    }
-
-    @Test
-    void aWriteOfAnInterruptedThreadWritesNothing() {
-        var container = Database.start();
-        try {
-            var client = container.getClient();
-            var candidate = new EventCandidate(
-                    "https://www.eventsourcingdb.io", "/test", "io.eventsourcingdb.test", Map.of("value", 23));
-
-            Thread.currentThread().interrupt();
-            try {
-                assertThrows(CancellationException.class, () -> client.writeEvents(List.of(candidate)));
-            } finally {
-                assertTrue(Thread.interrupted());
-            }
-
-            try (var events = client.readEvents("/", new ReadEventsOptions(true))) {
-                assertEquals(0, events.count());
-            }
-        } finally {
-            container.stop();
         }
     }
 
