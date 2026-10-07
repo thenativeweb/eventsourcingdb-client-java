@@ -10,13 +10,21 @@ final class Lines {
 
     static final String SUBJECT = "{\"type\":\"subject\",\"payload\":{\"subject\":\"/\"}}";
 
+    // Characters that the server treats differently in the data of an event:
+    // it escapes <, &, and > as \u003c, \u0026, and \u003e, and passes on
+    // U+00E9 (e with acute, as a single code point) and U+1F600 (grinning
+    // face) as they are. They are written as escapes, so that it is clear
+    // which code points are meant.
+    static final String SPECIAL_CHARACTERS = "<&> \u00e9 \ud83d\ude00";
+
     // A line that EventSourcingDB sent while reading events, captured as it
-    // was, including the way the server escapes characters in the data.
+    // was, including the way the server escapes characters in the data. Its
+    // data contains the special characters above.
     static final String EVENT = """
             {"type":"event","payload":{"source":"https://x","subject":"/a","type":"io.x.y",\
             "traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","specversion":"1.0",\
             "id":"0","time":"2026-10-07T13:32:50.439461594Z","datacontenttype":"application/json",\
             "predecessorhash":"0000000000000000000000000000000000000000000000000000000000000000",\
-            "data":{"b":100,"k":{"a":2,"b":1},"n":1.5,"z":"\\u003c\\u0026\\u003e é 😀"},\
+            "data":{"b":100,"k":{"a":2,"b":1},"n":1.5,"z":"\\u003c\\u0026\\u003e \u00e9 \ud83d\ude00"},\
             "hash":"a6015b0e09ab312b6ff506e267ad46d6e806f3a13041f948cf5c5ebbf83105f0","signature":null}}""";
 }

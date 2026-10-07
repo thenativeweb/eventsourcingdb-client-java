@@ -73,10 +73,11 @@ class EventTest {
         @Test
         void verifiesTheHashOfAnEventWhoseDataTheServerEscapes() {
             container = Database.start();
-            var event = writeEvent(Map.of("text", "<&> é 😀", "number", 1.50, "nested", Map.of("b", 1, "a", 2)));
+            var event = writeEvent(
+                    Map.of("text", Lines.SPECIAL_CHARACTERS, "number", 1.50, "nested", Map.of("b", 1, "a", 2)));
 
             assertDoesNotThrow(event::verifyHash);
-            assertEquals("<&> é 😀", event.data().path("text").asString());
+            assertEquals(Lines.SPECIAL_CHARACTERS, event.data().path("text").asString());
         }
 
         @Test
