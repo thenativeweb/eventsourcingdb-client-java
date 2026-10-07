@@ -7,9 +7,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.eventsourcingdb.EventCandidate;
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.testcontainers.DockerClientFactory;
+import org.testcontainers.containers.ContainerLaunchException;
 
 class ContainerTest {
     @Test
@@ -107,6 +110,92 @@ class ContainerTest {
 
         container.stop();
 
+        assertFalse(container.isRunning());
+    }
+
+    // Lists which of the given containers still exist in Docker, running or
+    // not.
+    private static List<String> existing(List<String> containerIds) {
+        return DockerClientFactory.instance()
+                .client()
+                .listContainersCmd()
+                .withShowAll(true)
+                .withIdFilter(containerIds)
+                .exec()
+                .stream()
+                .map(container -> container.getId())
+                .toList();
+    }
+
+    @Test
+    void replacesAContainerWhoseDatabaseDoesNotBecomeReachable() {
+        var containerIds = new ArrayList<String>();
+        var container = new Container().withImageTag(ImageTag.fromDockerfile());
+
+        // Docker Desktop sometimes does not make the port of a container
+        // reachable from the host. The container keeps running, but starting
+        // it fails, as it does here twice.
+        container.starter = genericContainer -> {
+            genericContainer.start();
+            containerIds.add(genericContainer.getContainerId());
+            if (containerIds.size() < 3) {
+                throw new ContainerLaunchException("the database did not become reachable");
+            }
+        };
+
+        container.start();
+        try {
+            assertEquals(3, containerIds.size());
+            assertEquals(List.of(containerIds.get(2)), existing(containerIds));
+            container.getClient().ping();
+        } finally {
+            container.stop();
+        }
+    }
+
+    @Test
+    void givesUpAfterThreeAttemptsAndSaysWhy() {
+        var containerIds = new ArrayList<String>();
+        var failures = new ArrayList<ContainerLaunchException>();
+        var container = new Container().withImageTag(ImageTag.fromDockerfile());
+
+        container.starter = genericContainer -> {
+            genericContainer.start();
+            containerIds.add(genericContainer.getContainerId());
+            var failure = new ContainerLaunchException("the database did not become reachable");
+            failures.add(failure);
+            throw failure;
+        };
+
+        var exception = assertThrows(IllegalStateException.class, container::start);
+
+        assertEquals(
+                "failed to start container, the database did not become reachable in 3 attempts",
+                exception.getMessage());
+        assertEquals(failures.getLast(), exception.getCause());
+        assertEquals(3, containerIds.size());
+        assertEquals(List.of(), existing(containerIds));
+        assertFalse(container.isRunning());
+    }
+
+    @Test
+    void throwsAnyOtherFailureAtOnceAndRemovesTheContainer() {
+        var containerIds = new ArrayList<String>();
+
+        // Without an API token, EventSourcingDB exits right away.
+        var container = new Container().withImageTag(ImageTag.fromDockerfile()).withApiToken("");
+        container.starter = genericContainer -> {
+            try {
+                genericContainer.start();
+            } finally {
+                containerIds.add(genericContainer.getContainerId());
+            }
+        };
+
+        assertThrows(ContainerLaunchException.class, container::start);
+
+        assertEquals(1, containerIds.size());
+        assertEquals(List.of(), existing(containerIds));
         assertFalse(container.isRunning());
     }
 }
