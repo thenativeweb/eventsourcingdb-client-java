@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,6 +69,20 @@ class WriteEventsTest {
         assertEquals(new EventData(23), writtenEvents.get(0).data(EventData.class));
         assertEquals("1", writtenEvents.get(1).id());
         assertEquals(new EventData(42), writtenEvents.get(1).data(EventData.class));
+    }
+
+    @Test
+    void writesNothingIfTheThreadIsInterrupted() {
+        Thread.currentThread().interrupt();
+        try {
+            assertThrows(CancellationException.class, () -> client.writeEvents(List.of(candidate(23))));
+        } finally {
+            assertTrue(Thread.interrupted());
+        }
+
+        try (var events = client.readEvents("/", new ReadEventsOptions(true))) {
+            assertEquals(0, events.count());
+        }
     }
 
     @Test

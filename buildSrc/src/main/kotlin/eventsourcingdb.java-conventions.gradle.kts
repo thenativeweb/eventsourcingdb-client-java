@@ -29,6 +29,16 @@ tasks.withType<JavaCompile>().configureEach {
     options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
 }
 
+// Every public type and member needs a Javadoc comment. The compiler checks
+// that, so a missing comment fails the build like any other warning.
+tasks.compileJava {
+    options.compilerArgs.add("-Xdoclint:all/protected")
+}
+
+tasks.javadoc {
+    (options as StandardJavadocDocletOptions).addBooleanOption("Werror", true)
+}
+
 dependencies {
     testImplementation(platform(libs.findLibrary("junit-bom").get()))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -67,7 +77,7 @@ tasks.jacocoTestCoverageVerification {
 }
 
 tasks.check {
-    dependsOn(tasks.jacocoTestCoverageVerification)
+    dependsOn(tasks.jacocoTestCoverageVerification, tasks.javadoc)
 }
 
 spotless {
