@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.function.Consumer;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.Transferable;
@@ -38,11 +39,18 @@ public final class Container {
     private static final String IMAGE_NAME = "thenativeweb/eventsourcingdb";
     private static final String SIGNING_KEY_PATH = "/etc/esdb/signing-key.pem";
 
+    // How many containers start() starts at most, as it replaces each
+    // container whose database does not become reachable.
+    private static final int MAX_START_ATTEMPTS = 3;
+
     private String imageTag = "latest";
     private int internalPort = 3000;
     private String apiToken = "secret";
     private KeyPair signingKeyPair;
     private GenericContainer<?> container;
+
+    // Starts a container. It is a field only so that tests can replace it.
+    Consumer<GenericContainer<?>> starter = GenericContainer::start;
 
     /**
      * Creates a container that uses the {@code latest} tag of the official EventSourcingDB image, port 3000 inside the
@@ -98,9 +106,47 @@ public final class Container {
     /**
      * Starts the container, and waits until the instance answers pings.
      *
-     * @throws RuntimeException if the container does not start, e.g. because the image does not exist
+     * <p>Docker Desktop sometimes does not make the port it maps a container to reachable from the host. If the
+     * database in a running container does not become reachable, the container is replaced by a new one, up to three
+     * times. A container that fails to start is removed either way.
+     *
+     * @throws IllegalStateException if the database did not become reachable in any of three containers
+     * @throws RuntimeException if the container does not start for another reason, e.g. because the image does not
+     *     exist
      */
     public void start() {
+        for (var attempt = 1; ; attempt++) {
+            var container = newContainer();
+
+            try {
+                starter.accept(container);
+                this.container = container;
+                return;
+            } catch (RuntimeException ex) {
+                // Docker Desktop sometimes does not make the port it maps a
+                // container to reachable from the host. The container keeps
+                // running, but the database in it can never be reached, so it
+                // is replaced by a new one. Every other failure is thrown at
+                // once. Either way, the container that failed to start is
+                // removed, so that it is not left behind.
+                var isRunning = container.isRunning();
+                container.stop();
+
+                if (!isRunning) {
+                    throw ex;
+                }
+                if (attempt == MAX_START_ATTEMPTS) {
+                    throw new IllegalStateException(
+                            "failed to start container, the database did not become reachable in "
+                                    + MAX_START_ATTEMPTS
+                                    + " attempts",
+                            ex);
+                }
+            }
+        }
+    }
+
+    private GenericContainer<?> newContainer() {
         var command = new ArrayList<>(List.of(
                 "run",
                 "--api-token",
@@ -122,9 +168,8 @@ public final class Container {
         }
 
         container.withCommand(command.toArray(String[]::new));
-        container.start();
 
-        this.container = container;
+        return container;
     }
 
     private static byte[] pem(PrivateKey privateKey) {
