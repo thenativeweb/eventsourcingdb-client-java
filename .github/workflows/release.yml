@@ -37,7 +37,7 @@ jobs:
         git tag v${{steps.get_next_version.outputs.version}}
         git push origin v${{steps.get_next_version.outputs.version}}
     # Publishing to Maven Central stays disabled until the namespace
-    # io.eventsourcingdb is verified on central.sonatype.com, and the
+    # io.thenativeweb is verified on central.sonatype.com, and the
     # secrets below exist.
     # - name: Publish new version
     #   if: ${{ steps.get_next_version.outputs.hasNextVersion == 'true' }}
