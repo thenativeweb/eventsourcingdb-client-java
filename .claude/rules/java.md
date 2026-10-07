@@ -11,6 +11,7 @@ paths:
 
 - Stick to idiomatic, modern Java at the level of Java 21, the minimum version the SDK supports: records for plain data, sealed interfaces for closed sets of alternatives, pattern matching for `switch` and `instanceof`, text blocks, and `var` for local variables whose type the right-hand side already shows.
 - Prefer unchecked exceptions. The exceptions the SDK throws itself extend `EventSourcingDbException`.
+- In a `catch` block, name the exception `ex`. Like `err` in Go, it is an established abbreviation in the sense of `.claude/rules/general.md`.
 
 ## Tooling
 
