@@ -146,14 +146,18 @@ public final class Client {
 
     private static Map<String, Object> toRequest(Precondition precondition) {
         return switch (precondition) {
-            case IsSubjectPristinePrecondition p ->
-                Map.of("type", "isSubjectPristine", "payload", Map.of("subject", p.subject()));
-            case IsSubjectPopulatedPrecondition p ->
-                Map.of("type", "isSubjectPopulated", "payload", Map.of("subject", p.subject()));
-            case IsSubjectOnEventIdPrecondition p ->
-                Map.of("type", "isSubjectOnEventId", "payload", Map.of("subject", p.subject(), "eventId", p.eventId()));
-            case IsEventQlQueryTruePrecondition p ->
-                Map.of("type", "isEventQlQueryTrue", "payload", Map.of("query", p.query()));
+            case IsSubjectPristinePrecondition pristinePrecondition ->
+                Map.of("type", "isSubjectPristine", "payload", Map.of("subject", pristinePrecondition.subject()));
+            case IsSubjectPopulatedPrecondition populatedPrecondition ->
+                Map.of("type", "isSubjectPopulated", "payload", Map.of("subject", populatedPrecondition.subject()));
+            case IsSubjectOnEventIdPrecondition onEventIdPrecondition ->
+                Map.of(
+                        "type",
+                        "isSubjectOnEventId",
+                        "payload",
+                        Map.of("subject", onEventIdPrecondition.subject(), "eventId", onEventIdPrecondition.eventId()));
+            case IsEventQlQueryTruePrecondition queryPrecondition ->
+                Map.of("type", "isEventQlQueryTrue", "payload", Map.of("query", queryPrecondition.query()));
         };
     }
 
