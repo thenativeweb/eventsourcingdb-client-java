@@ -35,10 +35,16 @@ import tools.jackson.databind.node.ObjectNode;
 public final class Client {
     private static final Duration HEARTBEAT_TIMEOUT = Duration.ofSeconds(30);
 
+    // Bounds only how long connecting may take, so that an unreachable server
+    // does not leave a request waiting for the timeout of the operating
+    // system. A timeout for whole requests would end every stream that
+    // observes events.
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
+
     private final URI baseUrl;
     private final String apiToken;
     private final Duration heartbeatTimeout;
-    private final HttpClient httpClient = HttpClient.newHttpClient();
+    private final HttpClient httpClient;
 
     /**
      * Creates a client for the EventSourcingDB instance at the given URL.
@@ -47,13 +53,38 @@ public final class Client {
      * @param apiToken the API token to authenticate with
      */
     public Client(URI baseUrl, String apiToken) {
-        this(baseUrl, apiToken, HEARTBEAT_TIMEOUT);
+        this(baseUrl, apiToken, new ClientOptions());
+    }
+
+    /**
+     * Creates a client for the EventSourcingDB instance at the given URL, with the given options.
+     *
+     * @param baseUrl the URL of the instance, e.g. {@code http://localhost:3000}
+     * @param apiToken the API token to authenticate with
+     * @param options the options, e.g. the HTTP client to send requests with
+     */
+    public Client(URI baseUrl, String apiToken, ClientOptions options) {
+        this(baseUrl, apiToken, options, HEARTBEAT_TIMEOUT);
     }
 
     Client(URI baseUrl, String apiToken, Duration heartbeatTimeout) {
+        this(baseUrl, apiToken, new ClientOptions(), heartbeatTimeout);
+    }
+
+    Client(URI baseUrl, String apiToken, ClientOptions options, Duration heartbeatTimeout) {
         this.baseUrl = baseUrl;
         this.apiToken = apiToken;
         this.heartbeatTimeout = heartbeatTimeout;
+
+        var givenHttpClient = options.httpClient();
+        httpClient = givenHttpClient != null
+                ? givenHttpClient
+                : HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+    }
+
+    // Lets tests inspect the HTTP client that requests are sent with.
+    HttpClient httpClient() {
+        return httpClient;
     }
 
     /**

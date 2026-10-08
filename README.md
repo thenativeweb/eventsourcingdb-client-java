@@ -58,6 +58,22 @@ client.verifyApiToken();
 
 *Note that all exceptions the client throws are unchecked. For details, see [Handling Errors](#handling-errors).*
 
+### Configuring the HTTP Client
+
+By default, the client creates an HTTP client of its own, which gives up connecting to the server after 10 seconds. If you need to configure what it does not, e.g. other timeouts, a proxy, or TLS, create a `java.net.http.HttpClient` yourself, and hand it over using `ClientOptions`:
+
+```java
+var httpClient = HttpClient.newBuilder()
+  .connectTimeout(Duration.ofSeconds(5))
+  .proxy(ProxySelector.of(new InetSocketAddress("proxy.example.com", 8080)))
+  .build();
+
+var client = new Client(baseUrl, apiToken, new ClientOptions()
+  .withHttpClient(httpClient));
+```
+
+*Note that the HTTP client belongs to you, so the client does not close it.*
+
 ### Writing Events
 
 Call the `writeEvents` method and hand over a list with one or more events. You do not have to provide all event fields – some are automatically added by the server.
