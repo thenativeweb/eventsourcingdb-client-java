@@ -8,6 +8,9 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
@@ -33,7 +36,7 @@ import tools.jackson.databind.node.ObjectNode;
  *
  * <p>A client is safe to use from multiple threads.
  */
-public final class Client {
+public final class Client implements AutoCloseable {
     private static final Duration HEARTBEAT_TIMEOUT = Duration.ofSeconds(30);
 
     // Bounds only how long connecting may take, so that an unreachable server
@@ -46,7 +49,14 @@ public final class Client {
     private final String apiToken;
     private final Duration heartbeatTimeout;
     private final HttpClient httpClient;
+    private final boolean isHttpClientOwned;
     private final JsonMapper dataMapper;
+
+    // What close() needs to end what the client is doing.
+    private final Object lock = new Object();
+    private final Set<Runnable> openRequests = ConcurrentHashMap.newKeySet();
+    private final Set<LineStream<?>> openStreams = ConcurrentHashMap.newKeySet();
+    private volatile boolean isClosed;
 
     /**
      * Creates a client for the EventSourcingDB instance at the given URL.
@@ -82,6 +92,7 @@ public final class Client {
         httpClient = givenHttpClient != null
                 ? givenHttpClient
                 : HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+        isHttpClientOwned = givenHttpClient == null;
 
         var givenDataMapper = options.dataMapper();
         dataMapper = givenDataMapper != null ? givenDataMapper : Json.MAPPER;
@@ -102,7 +113,7 @@ public final class Client {
         var request =
                 HttpRequest.newBuilder(baseUrl.resolve("/api/v1/ping")).GET().build();
 
-        var result = readJson("ping", send("ping", request));
+        var result = Json.MAPPER.readTree(request("ping", request));
         if (!"io.eventsourcingdb.api.ping-received".equals(result.path("type").asString())) {
             throw new EventSourcingDbException("failed to ping");
         }
@@ -119,7 +130,7 @@ public final class Client {
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
 
-        var result = readJson("verify API token", send("verify API token", request));
+        var result = Json.MAPPER.readTree(request("verify API token", request));
         if (!"io.eventsourcingdb.api.api-token-verified"
                 .equals(result.path("type").asString())) {
             throw new EventSourcingDbException("failed to verify API token");
@@ -174,10 +185,10 @@ public final class Client {
             }
         }
 
-        var response = send("write events", post("/api/v1/write-events", body));
+        var response = request("write events", post("/api/v1/write-events", body));
 
-        return RawJson.elements(Http.readBody("write events", response)).stream()
-                .map(cloudEvent -> Event.parse(cloudEvent, dataMapper))
+        return RawJson.readArray(response, "data").stream()
+                .map(cloudEvent -> Event.from(cloudEvent.tree(), cloudEvent.raw(), dataMapper))
                 .toList();
     }
 
@@ -295,7 +306,7 @@ public final class Client {
      * @return a stream of the rows, each of which matches the projection of the query
      */
     public Stream<JsonNode> runEventQlQuery(String query) {
-        return runEventQlQuery(query, (payload, line) -> payload);
+        return runEventQlQuery(query, (payload, rawData) -> payload);
     }
 
     /**
@@ -311,7 +322,7 @@ public final class Client {
      * @return a stream of the rows
      */
     public <T> Stream<T> runEventQlQuery(String query, Class<T> rowType) {
-        return runEventQlQuery(query, (payload, line) -> dataMapper.treeToValue(payload, rowType));
+        return runEventQlQuery(query, (payload, rawData) -> dataMapper.treeToValue(payload, rowType));
     }
 
     private <T> Stream<T> runEventQlQuery(String query, LineStream.Parser<T> parser) {
@@ -336,7 +347,7 @@ public final class Client {
                 "read subjects",
                 post("/api/v1/read-subjects", body),
                 "subject",
-                (payload, line) -> payload.path("subject").asString(),
+                (payload, rawData) -> payload.path("subject").asString(),
                 null);
     }
 
@@ -351,7 +362,7 @@ public final class Client {
                 "read event types",
                 post("/api/v1/read-event-types", Json.MAPPER.createObjectNode()),
                 "eventType",
-                (payload, line) -> EventType.from(payload),
+                (payload, rawData) -> EventType.from(payload),
                 null);
     }
 
@@ -366,8 +377,8 @@ public final class Client {
         var body = Json.MAPPER.createObjectNode();
         body.put("eventType", eventType);
 
-        var response = send("read event type", post("/api/v1/read-event-type", body));
-        return EventType.from(readJson("read event type", response));
+        var response = request("read event type", post("/api/v1/read-event-type", body));
+        return EventType.from(Json.MAPPER.readTree(response));
     }
 
     /**
@@ -383,8 +394,7 @@ public final class Client {
         body.put("eventType", eventType);
         body.set("schema", Json.MAPPER.valueToTree(schema));
 
-        var response = send("register event schema", post("/api/v1/register-event-schema", body));
-        Http.readBody("register event schema", response);
+        request("register event schema", post("/api/v1/register-event-schema", body));
     }
 
     private HttpRequest post(String path, JsonNode body) {
@@ -398,10 +408,48 @@ public final class Client {
         return HttpRequest.newBuilder(baseUrl.resolve(path)).header("Authorization", "Bearer " + apiToken);
     }
 
-    private HttpResponse<InputStream> send(String action, HttpRequest request) {
+    // Sends a request and returns the body of its response. The request is
+    // sent under the same lock under which close() marks the client as
+    // closed, so that close() either sees the request and ends it, or the
+    // request sees that the client is closed and is not sent at all.
+    private String request(String action, HttpRequest request) {
         Http.throwIfInterrupted(action);
 
-        return Http.await(action, httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream()));
+        CompletableFuture<HttpResponse<InputStream>> response;
+        Runnable abortion;
+        synchronized (lock) {
+            throwIfClosed();
+
+            response = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream());
+            abortion = () -> abort(response);
+            openRequests.add(abortion);
+        }
+
+        try {
+            return Http.readBody(action, Http.await(action, response));
+        } catch (RuntimeException ex) {
+            if (isClosed) {
+                throw Http.cancellation(action, ex);
+            }
+            throw ex;
+        } finally {
+            openRequests.remove(abortion);
+        }
+    }
+
+    // Ends a request, whether the server has not answered yet or its body is
+    // still being read.
+    private static void abort(CompletableFuture<HttpResponse<InputStream>> response) {
+        response.cancel(true);
+        if (!response.isCompletedExceptionally()) {
+            Http.close(response.join().body());
+        }
+    }
+
+    private void throwIfClosed() {
+        if (isClosed) {
+            throw new IllegalStateException("client is closed");
+        }
     }
 
     private <T> Stream<T> stream(
@@ -410,19 +458,46 @@ public final class Client {
             String itemType,
             LineStream.Parser<T> parser,
             @Nullable Duration heartbeatTimeout) {
-        return LineStream.of(
-                action,
-                () -> httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream()),
-                itemType,
-                parser,
-                heartbeatTimeout);
+        synchronized (lock) {
+            throwIfClosed();
+
+            return LineStream.of(
+                    action,
+                    () -> httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream()),
+                    itemType,
+                    parser,
+                    heartbeatTimeout,
+                    openStreams);
+        }
     }
 
-    private Event parseEvent(JsonNode payload, String line) {
-        return Event.parse(RawJson.property(line, "payload"), dataMapper);
+    private Event parseEvent(JsonNode payload, @Nullable String rawData) {
+        return Event.from(payload, rawData, dataMapper);
     }
 
-    private static JsonNode readJson(String action, HttpResponse<InputStream> response) {
-        return Json.MAPPER.readTree(Http.readBody(action, response));
+    /**
+     * Closes the client, and ends everything it is doing at once: requests that are running and streams that are open,
+     * whether they have started or not, end with a {@link java.util.concurrent.CancellationException}, as if they had
+     * been aborted. Every request afterwards throws an {@link IllegalStateException} without being sent.
+     *
+     * <p>The client closes the HTTP client it created itself, but not one that was given to it with
+     * {@link ClientOptions#withHttpClient(HttpClient)}, since that one belongs to the caller. Closing a client that is
+     * closed already does nothing.
+     */
+    @Override
+    public void close() {
+        synchronized (lock) {
+            if (isClosed) {
+                return;
+            }
+            isClosed = true;
+        }
+
+        openRequests.forEach(Runnable::run);
+        openStreams.forEach(LineStream::close);
+
+        if (isHttpClientOwned) {
+            httpClient.shutdownNow();
+        }
     }
 }

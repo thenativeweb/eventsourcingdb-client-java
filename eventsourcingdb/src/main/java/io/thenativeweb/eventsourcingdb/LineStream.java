@@ -8,6 +8,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.concurrent.CompletableFuture;
@@ -18,7 +19,9 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.core.JsonToken;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.MissingNode;
 
 // LineStream hands out the items of an NDJSON stream as the caller consumes
 // them. It sends the request only once the caller starts to consume, and it
@@ -32,6 +35,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     private final String itemType;
     private final Parser<T> parser;
     private final @Nullable Duration heartbeatTimeout;
+    private final Set<LineStream<?>> openStreams;
 
     private volatile @Nullable Supplier<RuntimeException> abortion;
     private volatile @Nullable CompletableFuture<HttpResponse<InputStream>> response;
@@ -43,24 +47,31 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             Supplier<CompletableFuture<HttpResponse<InputStream>>> request,
             String itemType,
             Parser<T> parser,
-            @Nullable Duration heartbeatTimeout) {
+            @Nullable Duration heartbeatTimeout,
+            Set<LineStream<?>> openStreams) {
         super(Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL);
         this.action = action;
         this.request = request;
         this.itemType = itemType;
         this.parser = parser;
         this.heartbeatTimeout = heartbeatTimeout;
+        this.openStreams = openStreams;
     }
 
     // A heartbeatTimeout of null means that the server sends no heartbeats on
     // this stream, so it may stay silent for as long as it needs.
+    // The stream adds itself to openStreams, and removes itself once it has
+    // ended, so that the client can end the streams that are still open when
+    // it is closed.
     static <T> Stream<T> of(
             String action,
             Supplier<CompletableFuture<HttpResponse<InputStream>>> request,
             String itemType,
             Parser<T> parser,
-            @Nullable Duration heartbeatTimeout) {
-        var lineStream = new LineStream<>(action, request, itemType, parser, heartbeatTimeout);
+            @Nullable Duration heartbeatTimeout,
+            Set<LineStream<?>> openStreams) {
+        var lineStream = new LineStream<>(action, request, itemType, parser, heartbeatTimeout, openStreams);
+        openStreams.add(lineStream);
         return StreamSupport.stream(lineStream, false).onClose(lineStream::close);
     }
 
@@ -95,21 +106,22 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             var line = readLine(reader);
             if (line == null) {
                 Http.close(reader);
+                openStreams.remove(this);
                 return false;
             }
             if (line.isBlank()) {
                 continue;
             }
 
-            var message = Json.MAPPER.readTree(line);
-            var type = message.path("type").asString();
-            var payload = message.path("payload");
+            var message = readMessage(line);
+            var type = message.type();
+            var payload = message.payload();
 
             if (type.equals("heartbeat")) {
                 continue;
             }
             if (type.equals(itemType)) {
-                consumer.accept(parser.parse(payload, line));
+                consumer.accept(parser.parse(payload, message.rawData()));
                 return true;
             }
             if (type.equals("error")) {
@@ -118,6 +130,38 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             }
 
             throw new EventSourcingDbException("failed to handle unsupported line type: " + type);
+        }
+    }
+
+    // A line of the stream: its type, its payload, and the text of the data
+    // within its payload as the server wrote it, if there is any.
+    private record Message(
+            String type, JsonNode payload, @Nullable String rawData) {}
+
+    // Reads a line in a single pass, since that is what most of the time of
+    // reading a stream goes into.
+    private static Message readMessage(String line) {
+        try (var parser = Json.MAPPER.createParser(line)) {
+            var type = "";
+            JsonNode payload = MissingNode.getInstance();
+            String rawData = null;
+
+            if (parser.nextToken() == JsonToken.START_OBJECT) {
+                while (parser.nextToken() == JsonToken.PROPERTY_NAME) {
+                    var name = parser.currentName();
+                    parser.nextToken();
+
+                    var value = RawJson.readValue(parser, line, "data");
+                    if (name.equals("type")) {
+                        type = value.tree().asString();
+                    } else if (name.equals("payload")) {
+                        payload = value.tree();
+                        rawData = value.raw();
+                    }
+                }
+            }
+
+            return new Message(type, payload, rawData);
         }
     }
 
@@ -171,7 +215,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
         }
     }
 
-    private void close() {
+    void close() {
         abort(() -> Http.cancellation(action, null));
     }
 
@@ -184,6 +228,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             }
             abortion = reason;
         }
+        openStreams.remove(this);
 
         var response = this.response;
         if (response != null) {
@@ -198,6 +243,6 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
 
     @FunctionalInterface
     interface Parser<T> {
-        T parse(JsonNode payload, String line);
+        T parse(JsonNode payload, @Nullable String rawData);
     }
 }

@@ -68,6 +68,34 @@ class StreamTest {
     }
 
     @Test
+    void ignoresPropertiesOfALineItDoesNotKnow() {
+        try (var server = streaming("{\"type\":\"subject\",\"payload\":{\"subject\":\"/\"},\"extra\":1}");
+                var subjects = new Client(server.url(), "secret").readSubjects("/")) {
+            assertEquals(List.of("/"), subjects.toList());
+        }
+    }
+
+    @Test
+    void failsOnALineThatIsNoObject() {
+        try (var server = streaming("[]");
+                var subjects = new Client(server.url(), "secret").readSubjects("/")) {
+            var exception = assertThrows(EventSourcingDbException.class, subjects::toList);
+
+            assertEquals("failed to handle unsupported line type: ", exception.getMessage());
+        }
+    }
+
+    @Test
+    void failsOnAnEventWithoutData() {
+        try (var server = streaming("{\"type\":\"event\",\"payload\":{\"id\":\"0\"}}");
+                var events = new Client(server.url(), "secret").readEvents("/", new ReadEventsOptions(true))) {
+            var exception = assertThrows(EventSourcingDbException.class, events::toList);
+
+            assertEquals("failed to parse JSON, property 'data' is missing", exception.getMessage());
+        }
+    }
+
+    @Test
     void failsOnAMalformedLine() {
         try (var server = streaming("{\"type\":");
                 var subjects = new Client(server.url(), "secret").readSubjects("/")) {

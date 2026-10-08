@@ -59,7 +59,18 @@ public final class Event {
     }
 
     static Event parse(String cloudEvent, JsonMapper dataMapper) {
-        return new Event(Json.MAPPER.readTree(cloudEvent), RawJson.property(cloudEvent, "data"), dataMapper);
+        var captured = RawJson.readValue(cloudEvent, "data");
+        return from(captured.tree(), captured.raw(), dataMapper);
+    }
+
+    // Builds an event from a cloud event that was read already, along with the
+    // text of its data as the server wrote it.
+    static Event from(JsonNode cloudEvent, @Nullable String dataFromServer, JsonMapper dataMapper) {
+        if (dataFromServer == null) {
+            throw new EventSourcingDbException("failed to parse JSON, property 'data' is missing");
+        }
+
+        return new Event(cloudEvent, dataFromServer, dataMapper);
     }
 
     /** {@return the version of the CloudEvents specification the event conforms to, e.g. {@code 1.0}} */
