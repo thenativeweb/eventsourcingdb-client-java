@@ -716,6 +716,23 @@ To check if the test container is running, call the `isRunning` method:
 var isRunning = container.isRunning();
 ```
 
+To get a client with options of your own, e.g. the data mapper of your application, hand them to `getClient`:
+
+```java
+var client = container.getClient(new ClientOptions()
+  .withDataMapper(jsonMapper));
+```
+
+`Container` is a Testcontainers `GenericContainer`, so you can use it wherever Testcontainers containers work, e.g. in a `try`-with-resources statement:
+
+```java
+try (var container = new Container()) {
+  container.start();
+
+  // ...
+}
+```
+
 #### Configuring the Container Instance
 
 By default, `Container` uses the `latest` tag of the official EventSourcingDB Docker image. To change that, call the `withImageTag` method:

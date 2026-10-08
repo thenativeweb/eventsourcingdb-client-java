@@ -2,9 +2,11 @@ package io.thenativeweb.eventsourcingdb.testcontainers;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.thenativeweb.eventsourcingdb.ClientOptions;
 import io.thenativeweb.eventsourcingdb.EventCandidate;
 import java.net.URI;
 import java.util.ArrayList;
@@ -13,6 +15,9 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.ContainerLaunchException;
+import org.testcontainers.containers.GenericContainer;
+import tools.jackson.databind.PropertyNamingStrategies;
+import tools.jackson.databind.json.JsonMapper;
 
 class ContainerTest {
     @Test
@@ -71,6 +76,39 @@ class ContainerTest {
 
             assertTrue(event.signature().isPresent());
             event.verifySignature(container.getVerificationKey());
+        } finally {
+            container.stop();
+        }
+    }
+
+    // Being a Testcontainers container is what frameworks such as Spring Boot
+    // build on, e.g. to connect a client to it.
+    @Test
+    void isATestcontainersContainer() {
+        assertInstanceOf(GenericContainer.class, new Container());
+    }
+
+    record BookAcquired(String bookTitle) {}
+
+    @Test
+    void handsOutAClientWithTheGivenOptions() {
+        var container = new Container().withImageTag(ImageTag.fromDockerfile());
+
+        container.start();
+        try {
+            var client = container.getClient(new ClientOptions()
+                    .withDataMapper(JsonMapper.builder()
+                            .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+                            .build()));
+
+            var event = client.writeEvents(List.of(new EventCandidate(
+                            "https://www.eventsourcingdb.io",
+                            "/test",
+                            "io.eventsourcingdb.test",
+                            new BookAcquired("2001"))))
+                    .getFirst();
+
+            assertEquals("2001", event.data().path("book_title").asString());
         } finally {
             container.stop();
         }
@@ -135,9 +173,9 @@ class ContainerTest {
         // Docker Desktop sometimes does not make the port of a container
         // reachable from the host. The container keeps running, but starting
         // it fails, as it does here twice.
-        container.starter = genericContainer -> {
-            genericContainer.start();
-            containerIds.add(genericContainer.getContainerId());
+        container.starter = self -> {
+            self.startOnce();
+            containerIds.add(self.getContainerId());
             if (containerIds.size() < 3) {
                 throw new ContainerLaunchException("the database did not become reachable");
             }
@@ -159,9 +197,9 @@ class ContainerTest {
         var failures = new ArrayList<ContainerLaunchException>();
         var container = new Container().withImageTag(ImageTag.fromDockerfile());
 
-        container.starter = genericContainer -> {
-            genericContainer.start();
-            containerIds.add(genericContainer.getContainerId());
+        container.starter = self -> {
+            self.startOnce();
+            containerIds.add(self.getContainerId());
             var failure = new ContainerLaunchException("the database did not become reachable");
             failures.add(failure);
             throw failure;
@@ -184,11 +222,11 @@ class ContainerTest {
 
         // Without an API token, EventSourcingDB exits right away.
         var container = new Container().withImageTag(ImageTag.fromDockerfile()).withApiToken("");
-        container.starter = genericContainer -> {
+        container.starter = self -> {
             try {
-                genericContainer.start();
+                self.startOnce();
             } finally {
-                containerIds.add(genericContainer.getContainerId());
+                containerIds.add(self.getContainerId());
             }
         };
 
