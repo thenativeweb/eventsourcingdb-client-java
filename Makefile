@@ -19,6 +19,7 @@ test:
 coverage:
 	@./gradlew test jacocoTestReport
 	@$(OPEN) ./eventsourcingdb/build/reports/jacoco/test/html/index.html
+	@$(OPEN) ./eventsourcingdb-spring-boot-starter/build/reports/jacoco/test/html/index.html
 	@$(OPEN) ./eventsourcingdb-testcontainers/build/reports/jacoco/test/html/index.html
 
 .PHONY: analyze coverage format qa test

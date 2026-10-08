@@ -1,4 +1,5 @@
 [versions]
+assertj = "3.27.7"
 errorprone = "2.50.0"
 errorprone-gradle-plugin = "5.1.1"
 jackson = "3.2.3"
@@ -10,9 +11,11 @@ nullaway = "0.14.2"
 palantir-java-format = "2.102.0"
 slf4j = "2.0.20"
 spotless = "8.10.3"
+spring-boot = "4.1.1"
 testcontainers = "2.0.5"
 
 [libraries]
+assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
 errorprone-core = { module = "com.google.errorprone:error_prone_core", version.ref = "errorprone" }
 errorprone-gradle-plugin = { module = "net.ltgt.gradle:gradle-errorprone-plugin", version.ref = "errorprone-gradle-plugin" }
 jackson-databind = { module = "tools.jackson.core:jackson-databind", version.ref = "jackson" }
@@ -24,4 +27,9 @@ maven-publish-gradle-plugin = { module = "com.vanniktech:gradle-maven-publish-pl
 palantir-java-format = { module = "com.palantir.javaformat:palantir-java-format", version.ref = "palantir-java-format" }
 slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4j" }
 spotless-gradle-plugin = { module = "com.diffplug.spotless:spotless-plugin-gradle", version.ref = "spotless" }
+spring-boot-configuration-processor = { module = "org.springframework.boot:spring-boot-configuration-processor", version.ref = "spring-boot" }
+spring-boot-jackson = { module = "org.springframework.boot:spring-boot-jackson", version.ref = "spring-boot" }
+spring-boot-starter = { module = "org.springframework.boot:spring-boot-starter", version.ref = "spring-boot" }
+spring-boot-test = { module = "org.springframework.boot:spring-boot-test", version.ref = "spring-boot" }
+spring-boot-testcontainers = { module = "org.springframework.boot:spring-boot-testcontainers", version.ref = "spring-boot" }
 testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
