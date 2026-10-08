@@ -14,7 +14,7 @@ The client SDK requires Java 21 or later. Add it to your build, e.g. with Gradle
 
 ```kotlin
 dependencies {
-  implementation("io.eventsourcingdb:eventsourcingdb:<version>")
+  implementation("io.thenativeweb:eventsourcingdb:<version>")
 }
 ```
 
@@ -22,7 +22,7 @@ Or with Maven:
 
 ```xml
 <dependency>
-  <groupId>io.eventsourcingdb</groupId>
+  <groupId>io.thenativeweb</groupId>
   <artifactId>eventsourcingdb</artifactId>
   <version><!-- version --></version>
 </dependency>
@@ -31,7 +31,7 @@ Or with Maven:
 Import the package and create an instance by providing the URL of your EventSourcingDB instance and the API token to use:
 
 ```java
-import io.eventsourcingdb.Client;
+import io.thenativeweb.eventsourcingdb.Client;
 import java.net.URI;
 
 // ...
@@ -633,14 +633,14 @@ The test container lives in the `eventsourcingdb-testcontainers` artifact. Add i
 
 ```kotlin
 dependencies {
-  testImplementation("io.eventsourcingdb:eventsourcingdb-testcontainers:<version>")
+  testImplementation("io.thenativeweb:eventsourcingdb-testcontainers:<version>")
 }
 ```
 
 Create a `Container`, start it, get a client, run your test code, and stop the container eventually:
 
 ```java
-import io.eventsourcingdb.testcontainers.Container;
+import io.thenativeweb.eventsourcingdb.testcontainers.Container;
 
 // ...
 

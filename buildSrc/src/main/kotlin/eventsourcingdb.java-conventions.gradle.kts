@@ -7,7 +7,7 @@ plugins {
 
 val libs = the<VersionCatalogsExtension>().named("libs")
 
-group = "io.eventsourcingdb"
+group = "io.thenativeweb"
 
 // The release workflow sets the version with -Pversion.
 if (version == Project.DEFAULT_VERSION) {
