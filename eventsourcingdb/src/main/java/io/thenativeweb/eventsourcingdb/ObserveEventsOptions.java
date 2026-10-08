@@ -1,5 +1,7 @@
 package io.thenativeweb.eventsourcingdb;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Options for {@link Client#observeEvents(String, ObserveEventsOptions)}.
  *
@@ -15,7 +17,10 @@ package io.thenativeweb.eventsourcingdb;
  * @param fromLatestEvent the latest event of a given type to start observing at, or {@code null}; it can not be
  *     combined with a lower bound
  */
-public record ObserveEventsOptions(boolean recursive, Bound lowerBound, ObserveFromLatestEvent fromLatestEvent) {
+public record ObserveEventsOptions(
+        boolean recursive,
+        @Nullable Bound lowerBound,
+        @Nullable ObserveFromLatestEvent fromLatestEvent) {
     /**
      * Creates options without a bound or a latest event to start at.
      *

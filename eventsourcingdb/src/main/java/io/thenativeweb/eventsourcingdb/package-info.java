@@ -6,4 +6,7 @@
  * it to write, read, and observe events. All exceptions the client throws are unchecked. Those that come from the
  * client itself extend {@link io.thenativeweb.eventsourcingdb.EventSourcingDbException}.
  */
+@NullMarked
 package io.thenativeweb.eventsourcingdb;
+
+import org.jspecify.annotations.NullMarked;

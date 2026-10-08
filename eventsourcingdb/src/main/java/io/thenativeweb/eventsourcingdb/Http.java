@@ -10,6 +10,7 @@ import java.net.http.HttpResponse;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import org.jspecify.annotations.Nullable;
 
 final class Http {
     private Http() {}
@@ -66,7 +67,7 @@ final class Http {
         return new EventSourcingDbException("failed to " + action, ex);
     }
 
-    static CancellationException cancellation(String action, Throwable cause) {
+    static CancellationException cancellation(String action, @Nullable Throwable cause) {
         var exception = new CancellationException("failed to " + action + ", the request was canceled");
         exception.initCause(cause);
         return exception;

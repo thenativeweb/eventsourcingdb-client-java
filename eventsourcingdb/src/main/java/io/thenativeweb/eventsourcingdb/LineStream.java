@@ -17,6 +17,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
+import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
 
 // LineStream hands out the items of an NDJSON stream as the caller consumes
@@ -30,19 +31,19 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     private final Supplier<CompletableFuture<HttpResponse<InputStream>>> request;
     private final String itemType;
     private final Parser<T> parser;
-    private final Duration heartbeatTimeout;
+    private final @Nullable Duration heartbeatTimeout;
 
-    private volatile Supplier<RuntimeException> abortion;
-    private volatile CompletableFuture<HttpResponse<InputStream>> response;
-    private volatile InputStream body;
-    private BufferedReader reader;
+    private volatile @Nullable Supplier<RuntimeException> abortion;
+    private volatile @Nullable CompletableFuture<HttpResponse<InputStream>> response;
+    private volatile @Nullable InputStream body;
+    private @Nullable BufferedReader reader;
 
     private LineStream(
             String action,
             Supplier<CompletableFuture<HttpResponse<InputStream>>> request,
             String itemType,
             Parser<T> parser,
-            Duration heartbeatTimeout) {
+            @Nullable Duration heartbeatTimeout) {
         super(Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL);
         this.action = action;
         this.request = request;
@@ -58,7 +59,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             Supplier<CompletableFuture<HttpResponse<InputStream>>> request,
             String itemType,
             Parser<T> parser,
-            Duration heartbeatTimeout) {
+            @Nullable Duration heartbeatTimeout) {
         var lineStream = new LineStream<>(action, request, itemType, parser, heartbeatTimeout);
         return StreamSupport.stream(lineStream, false).onClose(lineStream::close);
     }
@@ -85,14 +86,15 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     }
 
     private boolean advance(Consumer<? super T> consumer) {
+        var reader = this.reader;
         if (reader == null) {
-            open();
+            reader = open();
         }
 
         while (true) {
-            var line = readLine();
+            var line = readLine(reader);
             if (line == null) {
-                Http.close(body);
+                Http.close(reader);
                 return false;
             }
             if (line.isBlank()) {
@@ -119,21 +121,29 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
         }
     }
 
-    private void open() {
+    private BufferedReader open() {
         throwIfAborted();
         Http.throwIfInterrupted(action);
 
-        response = request.get();
+        var response = request.get();
+        this.response = response;
+
+        InputStream body;
         try {
             body = Http.await(action, response).body();
         } catch (RuntimeException ex) {
             throwIfAborted();
             throw ex;
         }
-        reader = new BufferedReader(new InputStreamReader(body, UTF_8));
+        this.body = body;
+
+        var reader = new BufferedReader(new InputStreamReader(body, UTF_8));
+        this.reader = reader;
+        return reader;
     }
 
-    private String readLine() {
+    // Returns null once the stream has ended.
+    private @Nullable String readLine(BufferedReader reader) {
         throwIfAborted();
 
         var timer = heartbeatTimeout == null

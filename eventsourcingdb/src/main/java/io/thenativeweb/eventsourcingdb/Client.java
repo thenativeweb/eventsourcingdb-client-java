@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
+import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -357,7 +358,7 @@ public final class Client {
             HttpRequest request,
             String itemType,
             LineStream.Parser<T> parser,
-            Duration heartbeatTimeout) {
+            @Nullable Duration heartbeatTimeout) {
         return LineStream.of(
                 action,
                 () -> httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream()),

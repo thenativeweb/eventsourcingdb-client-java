@@ -1,5 +1,7 @@
 package io.thenativeweb.eventsourcingdb;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Options for {@link Client#readEvents(String, ReadEventsOptions)}.
  *
@@ -19,7 +21,11 @@ package io.thenativeweb.eventsourcingdb;
  *     combined with a lower bound
  */
 public record ReadEventsOptions(
-        boolean recursive, Order order, Bound lowerBound, Bound upperBound, ReadFromLatestEvent fromLatestEvent) {
+        boolean recursive,
+        @Nullable Order order,
+        @Nullable Bound lowerBound,
+        @Nullable Bound upperBound,
+        @Nullable ReadFromLatestEvent fromLatestEvent) {
     /**
      * Creates options without an order, bounds, or a latest event to start at.
      *

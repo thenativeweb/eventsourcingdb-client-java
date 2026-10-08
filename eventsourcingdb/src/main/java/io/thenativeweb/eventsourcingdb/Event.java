@@ -8,6 +8,7 @@ import java.security.Signature;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Optional;
+import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
 
 /**
@@ -32,9 +33,9 @@ public final class Event {
     private final String dataFromServer;
     private final String hash;
     private final String predecessorHash;
-    private final String traceParent;
-    private final String traceState;
-    private final String signature;
+    private final @Nullable String traceParent;
+    private final @Nullable String traceState;
+    private final @Nullable String signature;
 
     private Event(JsonNode cloudEvent, String dataFromServer) {
         specVersion = cloudEvent.path("specversion").asString();
