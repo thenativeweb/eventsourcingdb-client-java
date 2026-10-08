@@ -68,7 +68,7 @@ tasks.javadoc {
 // reproducible; Dependabot keeps it current. The versions of Spring Boot only
 // apply where a module names no version, or a lower one, and they are not
 // published.
-val springBootVersions by configurations.creating {
+val springBootVersions = configurations.create("springBootVersions") {
     isCanBeConsumed = false
     isCanBeResolved = false
 }
