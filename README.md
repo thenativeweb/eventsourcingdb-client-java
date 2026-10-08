@@ -74,6 +74,17 @@ var client = new Client(baseUrl, apiToken, new ClientOptions()
 
 *Note that the HTTP client belongs to you, so the client does not close it.*
 
+### Configuring the Serialization of Event Data
+
+The client serializes and deserializes the data of events with a JSON mapper of its own. To apply the configuration of your application instead, e.g. its modules or its naming strategy, hand over your `JsonMapper` using `ClientOptions`:
+
+```java
+var client = new Client(baseUrl, apiToken, new ClientOptions()
+  .withDataMapper(jsonMapper));
+```
+
+*Note that the mapper applies to the data of events only. The client reads everything else the server sends with a JSON mapper of its own, so that the configuration of your application can not break it.*
+
 ### Writing Events
 
 Call the `writeEvents` method and hand over a list with one or more events. You do not have to provide all event fields – some are automatically added by the server.
