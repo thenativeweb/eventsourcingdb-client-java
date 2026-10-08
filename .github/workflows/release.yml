@@ -36,9 +36,6 @@ jobs:
       run: |
         git tag v${{steps.get_next_version.outputs.version}}
         git push origin v${{steps.get_next_version.outputs.version}}
-    # Uploads the new version to Maven Central without releasing it, so that
-    # it is checked in the Central Portal and released there by hand. What is
-    # released on Maven Central can never be removed again.
     - name: Publish new version
       if: ${{ steps.get_next_version.outputs.hasNextVersion == 'true' }}
       env:
@@ -47,4 +44,4 @@ jobs:
         ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.KEY_GITHUB_TO_MAVEN_CENTRAL_SIGNING }}
         ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.KEY_GITHUB_TO_MAVEN_CENTRAL_SIGNING_PASSWORD }}
       run: |
-        ./gradlew publishToMavenCentral -Pversion=${{ steps.get_next_version.outputs.version }}
+        ./gradlew publishAndReleaseToMavenCentral -Pversion=${{ steps.get_next_version.outputs.version }}
