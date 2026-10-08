@@ -12,7 +12,7 @@ For applications built with [Spring Boot](https://spring.io/projects/spring-boot
 
 ## Getting Started
 
-The client SDK requires Java 21 or later. Add it to your build, e.g. with Gradle:
+The client SDK requires Java 21 or later. It is built against the Jackson version that the latest release of Spring Boot uses, and requires that version of Jackson or a later one. Add it to your build, e.g. with Gradle:
 
 ```kotlin
 dependencies {

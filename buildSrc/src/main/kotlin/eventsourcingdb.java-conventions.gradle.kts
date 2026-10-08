@@ -60,7 +60,26 @@ tasks.javadoc {
     (options as StandardJavadocDocletOptions).addBooleanOption("Werror", true)
 }
 
+// Spring Boot decides which Jackson version Spring Boot applications use, so
+// the modules build and test against the Jackson version of the Spring Boot
+// release in the version catalog, instead of against one of their own. That
+// way, the compiler can not pick anything a newer Jackson version adds. The
+// release is pinned rather than looked up on every build, so that builds stay
+// reproducible; Dependabot keeps it current. The versions of Spring Boot only
+// apply where a module names no version, or a lower one, and they are not
+// published.
+val springBootVersions by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = false
+}
+
+listOf("compileClasspath", "runtimeClasspath", "testCompileClasspath", "testRuntimeClasspath").forEach { name ->
+    configurations.named(name) { extendsFrom(springBootVersions) }
+}
+
 dependencies {
+    springBootVersions(platform(libs.findLibrary("spring-boot-dependencies").get()))
+
     api(libs.findLibrary("jspecify").get())
     errorprone(libs.findLibrary("errorprone-core").get())
     errorprone(libs.findLibrary("nullaway").get())
@@ -110,6 +129,18 @@ spotless {
         palantirJavaFormat(libs.findVersion("palantir-java-format").get().requiredVersion)
         removeUnusedImports()
         forbidWildcardImports()
+    }
+}
+
+// Publishes the versions the modules were built and tested against, e.g. the
+// Jackson version that Spring Boot gives them.
+publishing {
+    publications.withType<MavenPublication>().configureEach {
+        versionMapping {
+            allVariants {
+                fromResolutionResult()
+            }
+        }
     }
 }
 
