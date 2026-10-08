@@ -176,8 +176,8 @@ public final class Client {
 
         var response = send("write events", post("/api/v1/write-events", body));
 
-        return RawJson.elements(Http.readBody("write events", response)).stream()
-                .map(cloudEvent -> Event.parse(cloudEvent, dataMapper))
+        return RawJson.readArray(Http.readBody("write events", response), "data").stream()
+                .map(cloudEvent -> Event.from(cloudEvent.tree(), cloudEvent.raw(), dataMapper))
                 .toList();
     }
 
@@ -295,7 +295,7 @@ public final class Client {
      * @return a stream of the rows, each of which matches the projection of the query
      */
     public Stream<JsonNode> runEventQlQuery(String query) {
-        return runEventQlQuery(query, (payload, line) -> payload);
+        return runEventQlQuery(query, (payload, rawData) -> payload);
     }
 
     /**
@@ -311,7 +311,7 @@ public final class Client {
      * @return a stream of the rows
      */
     public <T> Stream<T> runEventQlQuery(String query, Class<T> rowType) {
-        return runEventQlQuery(query, (payload, line) -> dataMapper.treeToValue(payload, rowType));
+        return runEventQlQuery(query, (payload, rawData) -> dataMapper.treeToValue(payload, rowType));
     }
 
     private <T> Stream<T> runEventQlQuery(String query, LineStream.Parser<T> parser) {
@@ -336,7 +336,7 @@ public final class Client {
                 "read subjects",
                 post("/api/v1/read-subjects", body),
                 "subject",
-                (payload, line) -> payload.path("subject").asString(),
+                (payload, rawData) -> payload.path("subject").asString(),
                 null);
     }
 
@@ -351,7 +351,7 @@ public final class Client {
                 "read event types",
                 post("/api/v1/read-event-types", Json.MAPPER.createObjectNode()),
                 "eventType",
-                (payload, line) -> EventType.from(payload),
+                (payload, rawData) -> EventType.from(payload),
                 null);
     }
 
@@ -418,8 +418,8 @@ public final class Client {
                 heartbeatTimeout);
     }
 
-    private Event parseEvent(JsonNode payload, String line) {
-        return Event.parse(RawJson.property(line, "payload"), dataMapper);
+    private Event parseEvent(JsonNode payload, @Nullable String rawData) {
+        return Event.from(payload, rawData, dataMapper);
     }
 
     private static JsonNode readJson(String action, HttpResponse<InputStream> response) {

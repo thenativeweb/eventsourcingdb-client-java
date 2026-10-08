@@ -18,7 +18,9 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.core.JsonToken;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.MissingNode;
 
 // LineStream hands out the items of an NDJSON stream as the caller consumes
 // them. It sends the request only once the caller starts to consume, and it
@@ -101,15 +103,15 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
                 continue;
             }
 
-            var message = Json.MAPPER.readTree(line);
-            var type = message.path("type").asString();
-            var payload = message.path("payload");
+            var message = readMessage(line);
+            var type = message.type();
+            var payload = message.payload();
 
             if (type.equals("heartbeat")) {
                 continue;
             }
             if (type.equals(itemType)) {
-                consumer.accept(parser.parse(payload, line));
+                consumer.accept(parser.parse(payload, message.rawData()));
                 return true;
             }
             if (type.equals("error")) {
@@ -118,6 +120,38 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             }
 
             throw new EventSourcingDbException("failed to handle unsupported line type: " + type);
+        }
+    }
+
+    // A line of the stream: its type, its payload, and the text of the data
+    // within its payload as the server wrote it, if there is any.
+    private record Message(
+            String type, JsonNode payload, @Nullable String rawData) {}
+
+    // Reads a line in a single pass, since that is what most of the time of
+    // reading a stream goes into.
+    private static Message readMessage(String line) {
+        try (var parser = Json.MAPPER.createParser(line)) {
+            var type = "";
+            JsonNode payload = MissingNode.getInstance();
+            String rawData = null;
+
+            if (parser.nextToken() == JsonToken.START_OBJECT) {
+                while (parser.nextToken() == JsonToken.PROPERTY_NAME) {
+                    var name = parser.currentName();
+                    parser.nextToken();
+
+                    var value = RawJson.readValue(parser, line, "data");
+                    if (name.equals("type")) {
+                        type = value.tree().asString();
+                    } else if (name.equals("payload")) {
+                        payload = value.tree();
+                        rawData = value.raw();
+                    }
+                }
+            }
+
+            return new Message(type, payload, rawData);
         }
     }
 
@@ -198,6 +232,6 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
 
     @FunctionalInterface
     interface Parser<T> {
-        T parse(JsonNode payload, String line);
+        T parse(JsonNode payload, @Nullable String rawData);
     }
 }
