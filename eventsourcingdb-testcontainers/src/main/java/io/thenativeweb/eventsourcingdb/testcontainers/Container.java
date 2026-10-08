@@ -3,6 +3,7 @@ package io.thenativeweb.eventsourcingdb.testcontainers;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import io.thenativeweb.eventsourcingdb.Client;
+import io.thenativeweb.eventsourcingdb.ClientOptions;
 import java.net.URI;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -35,29 +36,33 @@ import org.testcontainers.utility.DockerImageName;
  *     container.stop();
  * }
  * }</pre>
+ *
+ * <p>It is a Testcontainers {@link GenericContainer}, so it works wherever Testcontainers containers do, e.g. in a
+ * {@code try}-with-resources statement, or with the JUnit extension of Testcontainers.
  */
-public final class Container {
+public final class Container extends GenericContainer<Container> {
     private static final String IMAGE_NAME = "thenativeweb/eventsourcingdb";
     private static final String SIGNING_KEY_PATH = "/etc/esdb/signing-key.pem";
 
-    // How many containers start() starts at most, as it replaces each
+    // How many times start() starts the container at most, as it replaces each
     // container whose database does not become reachable.
     private static final int MAX_START_ATTEMPTS = 3;
 
-    private String imageTag = "latest";
     private int internalPort = 3000;
     private String apiToken = "secret";
     private @Nullable KeyPair signingKeyPair;
-    private @Nullable GenericContainer<?> container;
 
-    // Starts a container. It is a field only so that tests can replace it.
-    Consumer<GenericContainer<?>> starter = GenericContainer::start;
+    // Starts the container once. It is a field only so that tests can replace
+    // it.
+    Consumer<Container> starter = Container::startOnce;
 
     /**
      * Creates a container that uses the {@code latest} tag of the official EventSourcingDB image, port 3000 inside the
      * container, and the API token {@code secret}, and does not sign events.
      */
-    public Container() {}
+    public Container() {
+        super(DockerImageName.parse(IMAGE_NAME + ":latest"));
+    }
 
     /**
      * Sets the tag of the image to use, e.g. a specific version of EventSourcingDB.
@@ -66,7 +71,7 @@ public final class Container {
      * @return this container
      */
     public Container withImageTag(String tag) {
-        imageTag = tag;
+        setDockerImageName(IMAGE_NAME + ":" + tag);
         return this;
     }
 
@@ -104,6 +109,40 @@ public final class Container {
         return this;
     }
 
+    // Applies the configuration right before the container starts, so that the
+    // with methods may be called in any order.
+    @Override
+    protected void configure() {
+        var command = new ArrayList<>(List.of(
+                "run",
+                "--api-token",
+                apiToken,
+                "--data-directory-temporary",
+                "--http-enabled",
+                "--https-enabled=false",
+                "--http-port",
+                String.valueOf(internalPort)));
+
+        withExposedPorts(internalPort);
+        waitingFor(Wait.forHttp("/api/v1/ping").forPort(internalPort).withStartupTimeout(Duration.ofSeconds(10)));
+
+        if (signingKeyPair != null) {
+            withCopyToContainer(Transferable.of(pem(signingKeyPair.getPrivate()), 0777), SIGNING_KEY_PATH);
+            command.addAll(List.of("--signing-key-file", SIGNING_KEY_PATH));
+        }
+
+        withCommand(command.toArray(String[]::new));
+    }
+
+    private static byte[] pem(PrivateKey privateKey) {
+        var encoder = Base64.getMimeEncoder(64, new byte[] {'\n'});
+
+        return ("-----BEGIN PRIVATE KEY-----\n"
+                        + encoder.encodeToString(privateKey.getEncoded())
+                        + "\n-----END PRIVATE KEY-----\n")
+                .getBytes(UTF_8);
+    }
+
     /**
      * Starts the container, and waits until the instance answers pings.
      *
@@ -115,23 +154,20 @@ public final class Container {
      * @throws RuntimeException if the container does not start for another reason, e.g. because the image does not
      *     exist
      */
+    @Override
     public void start() {
         for (var attempt = 1; ; attempt++) {
-            var container = newContainer();
-
             try {
-                starter.accept(container);
-                this.container = container;
+                starter.accept(this);
                 return;
             } catch (RuntimeException ex) {
-                // Docker Desktop sometimes does not make the port it maps a
-                // container to reachable from the host. The container keeps
-                // running, but the database in it can never be reached, so it
-                // is replaced by a new one. Every other failure is thrown at
-                // once. Either way, the container that failed to start is
-                // removed, so that it is not left behind.
-                var isRunning = container.isRunning();
-                container.stop();
+                // A container that keeps running although starting it failed
+                // is one whose database can not be reached, so it is replaced
+                // by a new one. Every other failure is thrown at once. Either
+                // way, the container that failed to start is removed, so that
+                // it is not left behind.
+                var isRunning = isRunning();
+                stop();
 
                 if (!isRunning) {
                     throw ex;
@@ -147,39 +183,8 @@ public final class Container {
         }
     }
 
-    private GenericContainer<?> newContainer() {
-        var command = new ArrayList<>(List.of(
-                "run",
-                "--api-token",
-                apiToken,
-                "--data-directory-temporary",
-                "--http-enabled",
-                "--https-enabled=false",
-                "--http-port",
-                String.valueOf(internalPort)));
-
-        GenericContainer<?> container = new GenericContainer<>(DockerImageName.parse(IMAGE_NAME + ":" + imageTag))
-                .withExposedPorts(internalPort)
-                .waitingFor(
-                        Wait.forHttp("/api/v1/ping").forPort(internalPort).withStartupTimeout(Duration.ofSeconds(10)));
-
-        if (signingKeyPair != null) {
-            container.withCopyToContainer(Transferable.of(pem(signingKeyPair.getPrivate()), 0777), SIGNING_KEY_PATH);
-            command.addAll(List.of("--signing-key-file", SIGNING_KEY_PATH));
-        }
-
-        container.withCommand(command.toArray(String[]::new));
-
-        return container;
-    }
-
-    private static byte[] pem(PrivateKey privateKey) {
-        var encoder = Base64.getMimeEncoder(64, new byte[] {'\n'});
-
-        return ("-----BEGIN PRIVATE KEY-----\n"
-                        + encoder.encodeToString(privateKey.getEncoded())
-                        + "\n-----END PRIVATE KEY-----\n")
-                .getBytes(UTF_8);
+    void startOnce() {
+        super.start();
     }
 
     /**
@@ -187,8 +192,10 @@ public final class Container {
      *
      * @throws IllegalStateException if the container is not running
      */
+    @Override
     public String getHost() {
-        return running().getHost();
+        throwIfNotRunning();
+        return super.getHost();
     }
 
     /**
@@ -197,7 +204,8 @@ public final class Container {
      * @throws IllegalStateException if the container is not running
      */
     public int getMappedPort() {
-        return running().getMappedPort(internalPort);
+        throwIfNotRunning();
+        return getMappedPort(internalPort);
     }
 
     /**
@@ -234,38 +242,31 @@ public final class Container {
         return signingKeyPair().getPublic();
     }
 
-    /** {@return whether the container is running} */
-    public boolean isRunning() {
-        return container != null;
-    }
-
-    /**
-     * Stops and removes the container. If it is not running, this does nothing.
-     */
-    public void stop() {
-        if (container == null) {
-            return;
-        }
-
-        container.stop();
-        container = null;
-    }
-
     /**
      * {@return a client for the instance}
      *
      * @throws IllegalStateException if the container is not running
      */
     public Client getClient() {
-        return new Client(getBaseUrl(), apiToken);
+        return getClient(new ClientOptions());
     }
 
-    private GenericContainer<?> running() {
-        if (container == null) {
+    /**
+     * {@return a client for the instance, with the given options}
+     *
+     * <p>Use this to test with the same options as in production, e.g. the data mapper of your application.
+     *
+     * @param options the options of the client
+     * @throws IllegalStateException if the container is not running
+     */
+    public Client getClient(ClientOptions options) {
+        return new Client(getBaseUrl(), apiToken, options);
+    }
+
+    private void throwIfNotRunning() {
+        if (!isRunning()) {
             throw new IllegalStateException("container must be running");
         }
-
-        return container;
     }
 
     private KeyPair signingKeyPair() {
