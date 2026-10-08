@@ -8,6 +8,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.concurrent.CompletableFuture;
@@ -34,6 +35,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     private final String itemType;
     private final Parser<T> parser;
     private final @Nullable Duration heartbeatTimeout;
+    private final Set<LineStream<?>> openStreams;
 
     private volatile @Nullable Supplier<RuntimeException> abortion;
     private volatile @Nullable CompletableFuture<HttpResponse<InputStream>> response;
@@ -45,24 +47,31 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             Supplier<CompletableFuture<HttpResponse<InputStream>>> request,
             String itemType,
             Parser<T> parser,
-            @Nullable Duration heartbeatTimeout) {
+            @Nullable Duration heartbeatTimeout,
+            Set<LineStream<?>> openStreams) {
         super(Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL);
         this.action = action;
         this.request = request;
         this.itemType = itemType;
         this.parser = parser;
         this.heartbeatTimeout = heartbeatTimeout;
+        this.openStreams = openStreams;
     }
 
     // A heartbeatTimeout of null means that the server sends no heartbeats on
     // this stream, so it may stay silent for as long as it needs.
+    // The stream adds itself to openStreams, and removes itself once it has
+    // ended, so that the client can end the streams that are still open when
+    // it is closed.
     static <T> Stream<T> of(
             String action,
             Supplier<CompletableFuture<HttpResponse<InputStream>>> request,
             String itemType,
             Parser<T> parser,
-            @Nullable Duration heartbeatTimeout) {
-        var lineStream = new LineStream<>(action, request, itemType, parser, heartbeatTimeout);
+            @Nullable Duration heartbeatTimeout,
+            Set<LineStream<?>> openStreams) {
+        var lineStream = new LineStream<>(action, request, itemType, parser, heartbeatTimeout, openStreams);
+        openStreams.add(lineStream);
         return StreamSupport.stream(lineStream, false).onClose(lineStream::close);
     }
 
@@ -97,6 +106,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             var line = readLine(reader);
             if (line == null) {
                 Http.close(reader);
+                openStreams.remove(this);
                 return false;
             }
             if (line.isBlank()) {
@@ -205,7 +215,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
         }
     }
 
-    private void close() {
+    void close() {
         abort(() -> Http.cancellation(action, null));
     }
 
@@ -218,6 +228,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             }
             abortion = reason;
         }
+        openStreams.remove(this);
 
         var response = this.response;
         if (response != null) {
