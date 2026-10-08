@@ -30,6 +30,8 @@ Or with Maven:
 </dependency>
 ```
 
+If your application uses the Java module system, require the module `io.thenativeweb.eventsourcingdb` in its `module-info.java`.
+
 Import the package and create an instance by providing the URL of your EventSourcingDB instance and the API token to use:
 
 ```java
