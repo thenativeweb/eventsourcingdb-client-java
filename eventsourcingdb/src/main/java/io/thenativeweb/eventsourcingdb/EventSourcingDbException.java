@@ -1,5 +1,7 @@
 package io.thenativeweb.eventsourcingdb;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * The base class of the exceptions the client throws itself, e.g. if a request fails on its way, if the server reports
  * an error within a stream, or if the verification of an event fails. Like all exceptions of the client, it is
@@ -12,7 +14,7 @@ public class EventSourcingDbException extends RuntimeException {
         super(message);
     }
 
-    EventSourcingDbException(String message, Throwable cause) {
+    EventSourcingDbException(String message, @Nullable Throwable cause) {
         super(message, cause);
     }
 }

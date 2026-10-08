@@ -1,5 +1,7 @@
 package io.thenativeweb.eventsourcingdb;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * An event to write, in the <a href="https://docs.eventsourcingdb.io/fundamentals/cloud-events/">CloudEvents</a>
  * format. The server adds the remaining fields, such as the ID and the time, when it writes the event.
@@ -14,7 +16,12 @@ package io.thenativeweb.eventsourcingdb;
  * @param traceState the {@code tracestate} of a W3C trace context, or {@code null}
  */
 public record EventCandidate(
-        String source, String subject, String type, Object data, String traceParent, String traceState) {
+        String source,
+        String subject,
+        String type,
+        Object data,
+        @Nullable String traceParent,
+        @Nullable String traceState) {
     /**
      * Creates an event to write without a trace context.
      *

@@ -1,17 +1,25 @@
 [versions]
+errorprone = "2.50.0"
+errorprone-gradle-plugin = "5.1.1"
 jackson = "3.2.3"
+jspecify = "1.0.1"
 jacoco = "0.8.15"
 junit = "6.1.3"
 maven-publish = "0.37.0"
+nullaway = "0.14.2"
 palantir-java-format = "2.102.0"
 slf4j = "2.0.20"
 spotless = "8.10.3"
 testcontainers = "2.0.5"
 
 [libraries]
+errorprone-core = { module = "com.google.errorprone:error_prone_core", version.ref = "errorprone" }
+errorprone-gradle-plugin = { module = "net.ltgt.gradle:gradle-errorprone-plugin", version.ref = "errorprone-gradle-plugin" }
 jackson-databind = { module = "tools.jackson.core:jackson-databind", version.ref = "jackson" }
+jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
 jacoco-agent = { module = "org.jacoco:org.jacoco.agent", version.ref = "jacoco" }
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+nullaway = { module = "com.uber.nullaway:nullaway", version.ref = "nullaway" }
 maven-publish-gradle-plugin = { module = "com.vanniktech:gradle-maven-publish-plugin", version.ref = "maven-publish" }
 palantir-java-format = { module = "com.palantir.javaformat:palantir-java-format", version.ref = "palantir-java-format" }
 slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4j" }

@@ -5,6 +5,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.http.HttpResponse;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Reports that the server answered a request with an unexpected HTTP status code. Every method of the client that
@@ -26,7 +27,7 @@ public final class DbApiException extends EventSourcingDbException {
     /** The reason the server gave in the response body. */
     private final String reason;
 
-    private DbApiException(String action, int statusCode, String reason, IOException readFailure) {
+    private DbApiException(String action, int statusCode, String reason, @Nullable IOException readFailure) {
         super(message(action, statusCode, reason, readFailure), readFailure);
         this.action = action;
         this.statusCode = statusCode;
@@ -42,7 +43,7 @@ public final class DbApiException extends EventSourcingDbException {
         }
     }
 
-    private static String message(String action, int statusCode, String reason, IOException readFailure) {
+    private static String message(String action, int statusCode, String reason, @Nullable IOException readFailure) {
         var message = "failed to %s, got HTTP status code '%d', expected '200'".formatted(action, statusCode);
 
         if (readFailure != null) {

@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.function.Consumer;
+import org.jspecify.annotations.Nullable;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.Transferable;
@@ -46,8 +47,8 @@ public final class Container {
     private String imageTag = "latest";
     private int internalPort = 3000;
     private String apiToken = "secret";
-    private KeyPair signingKeyPair;
-    private GenericContainer<?> container;
+    private @Nullable KeyPair signingKeyPair;
+    private @Nullable GenericContainer<?> container;
 
     // Starts a container. It is a field only so that tests can replace it.
     Consumer<GenericContainer<?>> starter = GenericContainer::start;

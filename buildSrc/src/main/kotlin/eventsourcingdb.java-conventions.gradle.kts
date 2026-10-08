@@ -1,6 +1,10 @@
+import net.ltgt.gradle.errorprone.CheckSeverity
+import net.ltgt.gradle.errorprone.errorprone
+
 plugins {
     `java-library`
     jacoco
+    id("net.ltgt.errorprone")
     id("com.diffplug.spotless")
     id("com.vanniktech.maven.publish")
 }
@@ -35,11 +39,32 @@ tasks.compileJava {
     options.compilerArgs.add("-Xdoclint:all/protected")
 }
 
+// NullAway checks the code against its JSpecify annotations: in a package
+// marked @NullMarked, everything is non-null unless it says @Nullable. Only
+// NullAway runs; the other checks of Error Prone stay off. Tests pass null on
+// purpose now and then, so they are not checked.
+tasks.withType<JavaCompile>().configureEach {
+    options.errorprone {
+        disableAllChecks = true
+        check("NullAway", CheckSeverity.ERROR)
+        option("NullAway:OnlyNullMarked", "true")
+        option("NullAway:JSpecifyMode", "true")
+    }
+}
+
+tasks.compileTestJava {
+    options.errorprone.enabled = false
+}
+
 tasks.javadoc {
     (options as StandardJavadocDocletOptions).addBooleanOption("Werror", true)
 }
 
 dependencies {
+    api(libs.findLibrary("jspecify").get())
+    errorprone(libs.findLibrary("errorprone-core").get())
+    errorprone(libs.findLibrary("nullaway").get())
+
     testImplementation(platform(libs.findLibrary("junit-bom").get()))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
