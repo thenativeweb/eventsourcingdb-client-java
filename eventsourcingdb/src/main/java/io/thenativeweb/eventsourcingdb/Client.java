@@ -295,15 +295,30 @@ public final class Client {
      * @return a stream of the rows, each of which matches the projection of the query
      */
     public Stream<JsonNode> runEventQlQuery(String query) {
+        return runEventQlQuery(query, (payload, line) -> payload);
+    }
+
+    /**
+     * Runs an EventQL query, and deserializes each row into the given type.
+     *
+     * <p>This works like {@link #runEventQlQuery(String)}, except that each row is deserialized with the data mapper
+     * of the client, i.e. the one given by {@link ClientOptions#withDataMapper(JsonMapper)}, or the client's own. A
+     * row that does not match the type ends the stream with the exception of the mapper.
+     *
+     * @param <T> the type to deserialize each row into
+     * @param query the query, e.g. {@code FROM e IN events PROJECT INTO { id: e.id, type: e.type }}
+     * @param rowType the type to deserialize each row into, e.g. a record that matches the projection of the query
+     * @return a stream of the rows
+     */
+    public <T> Stream<T> runEventQlQuery(String query, Class<T> rowType) {
+        return runEventQlQuery(query, (payload, line) -> dataMapper.treeToValue(payload, rowType));
+    }
+
+    private <T> Stream<T> runEventQlQuery(String query, LineStream.Parser<T> parser) {
         var body = Json.MAPPER.createObjectNode();
         body.put("query", query);
 
-        return stream(
-                "run EventQL query",
-                post("/api/v1/run-eventql-query", body),
-                "row",
-                (payload, line) -> payload,
-                heartbeatTimeout);
+        return stream("run EventQL query", post("/api/v1/run-eventql-query", body), "row", parser, heartbeatTimeout);
     }
 
     /**
