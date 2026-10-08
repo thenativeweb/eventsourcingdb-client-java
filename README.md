@@ -85,6 +85,18 @@ var client = new Client(baseUrl, apiToken, new ClientOptions()
 
 *Note that the mapper applies to the data of events only. The client reads everything else the server sends with a JSON mapper of its own, so that the configuration of your application can not break it.*
 
+### Closing the Client
+
+The client holds connections and threads. Close it once you are done, e.g. when your application shuts down, or use it in a `try`-with-resources statement:
+
+```java
+try (var client = new Client(baseUrl, apiToken)) {
+  // ...
+}
+```
+
+Closing the client ends everything it is doing at once: requests that are running and streams that are open end with a `CancellationException`, as if they had been aborted. Every request afterwards throws an `IllegalStateException`.
+
 ### Writing Events
 
 Call the `writeEvents` method and hand over a list with one or more events. You do not have to provide all event fields – some are automatically added by the server.
@@ -667,7 +679,7 @@ try {
 
 If observing events or running an EventQL query receives nothing for 30 seconds, not even a heartbeat, e.g. because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and observing or the query ends with a `HeartbeatTimeoutException`.
 
-If a request is aborted, either because its thread is interrupted or because its stream is closed from somewhere else, it ends with a `CancellationException`.
+If a request is aborted, because its thread is interrupted, because its stream is closed from somewhere else, or because the client is closed, it ends with a `CancellationException`.
 
 ### Using Testcontainers
 
