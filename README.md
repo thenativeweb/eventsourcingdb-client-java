@@ -329,6 +329,21 @@ try (var rows = client.runEventQlQuery(
 
 *Note that each row returned by the stream is of type `JsonNode` and matches the projection specified in your query.*
 
+To get each row as a type of your own instead, e.g. a record that matches the projection, hand over its class. The client deserializes each row with its data mapper:
+
+```java
+record BookTitle(String title) {}
+
+try (var rows = client.runEventQlQuery(
+  "FROM e IN events PROJECT INTO { title: e.data.title }",
+  BookTitle.class
+)) {
+  rows.forEach(row -> {
+    // ...
+  });
+}
+```
+
 #### Aborting a Query
 
 If you need to abort a query, stop consuming the stream. However, this only works if there is currently a row to consume.
