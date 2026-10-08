@@ -8,6 +8,8 @@ For more information on EventSourcingDB, see its [official documentation](https:
 
 This client SDK includes support for [Testcontainers](https://testcontainers.com/) to spin up EventSourcingDB instances in integration tests. It lives in an artifact of its own, so applications that only use the client do not depend on Testcontainers. For details, see [Using Testcontainers](#using-testcontainers).
 
+For applications built with [Spring Boot](https://spring.io/projects/spring-boot), there is a starter that sets up the client from the configuration of the application. For details, see [Using Spring Boot](#using-spring-boot).
+
 ## Getting Started
 
 The client SDK requires Java 21 or later. Add it to your build, e.g. with Gradle:
@@ -774,3 +776,88 @@ In case you need to set up the client yourself, use the following methods to get
 - `getMappedPort()` returns the port
 - `getBaseUrl()` returns the full URL of the container
 - `getApiToken()` returns the API token
+
+### Using Spring Boot
+
+The Spring Boot support lives in the `eventsourcingdb-spring-boot-starter` artifact. It requires Spring Boot 4. Add it to your dependencies, e.g. with Gradle:
+
+```kotlin
+dependencies {
+  implementation("io.thenativeweb:eventsourcingdb-spring-boot-starter:<version>")
+}
+```
+
+Then set the URL of your EventSourcingDB instance and the API token to use, e.g. in `application.properties`:
+
+```properties
+eventsourcingdb.base-url=http://localhost:3000
+eventsourcingdb.api-token=secret
+```
+
+The starter creates a client from them, which you can inject wherever you need it:
+
+```java
+@Service
+public class BookService {
+  private final Client client;
+
+  public BookService(Client client) {
+    this.client = client;
+  }
+
+  // ...
+}
+```
+
+If one of the two properties is not set, the application fails to start.
+
+The client serializes and deserializes the data of events with the `JsonMapper` of Spring Boot, so the data follows the Jackson configuration of your application, e.g. its naming strategy. When the application shuts down, Spring Boot closes the client.
+
+To configure the client in other ways, e.g. with an HTTP client of your own, define a bean of type `Client`. The starter then uses yours instead of creating one. To connect it to the configured instance, inject `EventSourcingDbConnectionDetails`:
+
+```java
+@Bean
+Client client(EventSourcingDbConnectionDetails connectionDetails, JsonMapper jsonMapper) {
+  return new Client(
+    connectionDetails.getBaseUrl(),
+    connectionDetails.getApiToken(),
+    new ClientOptions()
+      .withHttpClient(httpClient)
+      .withDataMapper(jsonMapper)
+  );
+}
+```
+
+#### Connecting to the Test Container
+
+In tests, the starter can take the URL and the API token from the test container instead of from the properties. Add the test container and the Testcontainers support of Spring Boot to the dependencies of your tests, e.g. with Gradle:
+
+```kotlin
+dependencies {
+  testImplementation("io.thenativeweb:eventsourcingdb-testcontainers:<version>")
+  testImplementation("org.springframework.boot:spring-boot-testcontainers")
+}
+```
+
+Then define the container as a bean, and annotate it with `@ServiceConnection`:
+
+```java
+@TestConfiguration(proxyBeanMethods = false)
+class ContainerConfiguration {
+  @Bean
+  @ServiceConnection
+  Container eventSourcingDb() {
+    return new Container();
+  }
+}
+```
+
+Import that configuration into your tests. Spring Boot starts the container, and connects the client to it:
+
+```java
+@SpringBootTest
+@Import(ContainerConfiguration.class)
+class BookServiceTest {
+  // ...
+}
+```

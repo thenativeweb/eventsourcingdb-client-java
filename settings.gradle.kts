@@ -1,3 +1,3 @@
 rootProject.name = "eventsourcingdb-client-java"
 
-include("eventsourcingdb", "eventsourcingdb-testcontainers")
+include("eventsourcingdb", "eventsourcingdb-spring-boot-starter", "eventsourcingdb-testcontainers")
