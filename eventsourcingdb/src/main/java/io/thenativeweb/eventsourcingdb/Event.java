@@ -10,6 +10,7 @@ import java.util.HexFormat;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * An event as stored in EventSourcingDB, in the
@@ -31,13 +32,14 @@ public final class Event {
     private final String dataContentType;
     private final JsonNode data;
     private final String dataFromServer;
+    private final JsonMapper dataMapper;
     private final String hash;
     private final String predecessorHash;
     private final @Nullable String traceParent;
     private final @Nullable String traceState;
     private final @Nullable String signature;
 
-    private Event(JsonNode cloudEvent, String dataFromServer) {
+    private Event(JsonNode cloudEvent, String dataFromServer, JsonMapper dataMapper) {
         specVersion = cloudEvent.path("specversion").asString();
         id = cloudEvent.path("id").asString();
         timeFromServer = cloudEvent.path("time").asString();
@@ -48,6 +50,7 @@ public final class Event {
         dataContentType = cloudEvent.path("datacontenttype").asString();
         data = cloudEvent.path("data");
         this.dataFromServer = dataFromServer;
+        this.dataMapper = dataMapper;
         hash = cloudEvent.path("hash").asString();
         predecessorHash = cloudEvent.path("predecessorhash").asString();
         traceParent = cloudEvent.path("traceparent").asString(null);
@@ -55,8 +58,8 @@ public final class Event {
         signature = cloudEvent.path("signature").asString(null);
     }
 
-    static Event parse(String cloudEvent) {
-        return new Event(Json.MAPPER.readTree(cloudEvent), RawJson.property(cloudEvent, "data"));
+    static Event parse(String cloudEvent, JsonMapper dataMapper) {
+        return new Event(Json.MAPPER.readTree(cloudEvent), RawJson.property(cloudEvent, "data"), dataMapper);
     }
 
     /** {@return the version of the CloudEvents specification the event conforms to, e.g. {@code 1.0}} */
@@ -104,14 +107,16 @@ public final class Event {
     }
 
     /**
-     * Returns the data of the event, deserialized into the given type, e.g. a record.
+     * Returns the data of the event, deserialized into the given type, e.g. a record. This uses the data mapper of the
+     * client, i.e. the one given by {@link ClientOptions#withDataMapper(tools.jackson.databind.json.JsonMapper)}, or
+     * the client's own.
      *
      * @param <T> the type to deserialize the data into
      * @param dataType the type to deserialize the data into
      * @return the data of the event
      */
     public <T> T data(Class<T> dataType) {
-        return Json.MAPPER.treeToValue(data, dataType);
+        return dataMapper.treeToValue(data, dataType);
     }
 
     /** {@return the hash of the event, which the server computes from its fields and its data} */

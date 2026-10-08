@@ -51,7 +51,7 @@ class EventTest {
         cloudEvent.put("signature", event.signature().orElse(null));
         cloudEvent.put(field, value);
 
-        return Event.parse(Json.MAPPER.writeValueAsString(cloudEvent));
+        return Event.parse(Json.MAPPER.writeValueAsString(cloudEvent), Json.MAPPER);
     }
 
     // Formats the time of an event the way the server does, i.e. without

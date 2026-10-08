@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -45,6 +46,7 @@ public final class Client {
     private final String apiToken;
     private final Duration heartbeatTimeout;
     private final HttpClient httpClient;
+    private final JsonMapper dataMapper;
 
     /**
      * Creates a client for the EventSourcingDB instance at the given URL.
@@ -80,6 +82,9 @@ public final class Client {
         httpClient = givenHttpClient != null
                 ? givenHttpClient
                 : HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+
+        var givenDataMapper = options.dataMapper();
+        dataMapper = givenDataMapper != null ? givenDataMapper : Json.MAPPER;
     }
 
     // Lets tests inspect the HTTP client that requests are sent with.
@@ -152,7 +157,7 @@ public final class Client {
             eventNode.put("source", event.source());
             eventNode.put("subject", event.subject());
             eventNode.put("type", event.type());
-            eventNode.set("data", Json.MAPPER.valueToTree(event.data()));
+            eventNode.set("data", dataMapper.valueToTree(event.data()));
 
             if (event.traceParent() != null) {
                 eventNode.put("traceparent", event.traceParent());
@@ -172,7 +177,7 @@ public final class Client {
         var response = send("write events", post("/api/v1/write-events", body));
 
         return RawJson.elements(Http.readBody("write events", response)).stream()
-                .map(Event::parse)
+                .map(cloudEvent -> Event.parse(cloudEvent, dataMapper))
                 .toList();
     }
 
@@ -226,7 +231,7 @@ public final class Client {
                     toRequest(fromLatestEvent.subject(), fromLatestEvent.type(), fromLatestEvent.ifEventIsMissing()));
         }
 
-        return stream("read events", post("/api/v1/read-events", body), "event", Client::parseEvent, null);
+        return stream("read events", post("/api/v1/read-events", body), "event", this::parseEvent, null);
     }
 
     /**
@@ -261,7 +266,7 @@ public final class Client {
         }
 
         return stream(
-                "observe events", post("/api/v1/observe-events", body), "event", Client::parseEvent, heartbeatTimeout);
+                "observe events", post("/api/v1/observe-events", body), "event", this::parseEvent, heartbeatTimeout);
     }
 
     private static ObjectNode toRequest(Bound bound) {
@@ -398,8 +403,8 @@ public final class Client {
                 heartbeatTimeout);
     }
 
-    private static Event parseEvent(JsonNode payload, String line) {
-        return Event.parse(RawJson.property(line, "payload"));
+    private Event parseEvent(JsonNode payload, String line) {
+        return Event.parse(RawJson.property(line, "payload"), dataMapper);
     }
 
     private static JsonNode readJson(String action, HttpResponse<InputStream> response) {

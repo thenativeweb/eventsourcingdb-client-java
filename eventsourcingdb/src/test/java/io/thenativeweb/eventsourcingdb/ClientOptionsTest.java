@@ -51,6 +51,6 @@ class ClientOptionsTest {
 
     @Test
     void createsOptionsWithoutAnHttpClient() {
-        assertEquals(new ClientOptions(null), new ClientOptions());
+        assertEquals(new ClientOptions(null, null), new ClientOptions());
     }
 }
