@@ -62,6 +62,13 @@ final class TransportChooser {
         }
     }
 
+    @Nullable
+    Transport chosen() {
+        synchronized (lock) {
+            return chosen;
+        }
+    }
+
     // Waits for the transport. A failed probe fails the request with an
     // exception of its own, so that each request that waited for the probe
     // names its own action.

@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Stream;
+import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -81,6 +82,12 @@ public final class Client implements AutoCloseable {
     // Lets tests inspect the HTTP client that requests are sent with.
     HttpClient httpClient() {
         return requests.httpClient();
+    }
+
+    // Lets tests tell which API the client chose, if it has chosen one yet.
+    @Nullable
+    Transport chosenTransport() {
+        return transports.chosen();
     }
 
     // Learns which API the server offers, which only the first request of a
