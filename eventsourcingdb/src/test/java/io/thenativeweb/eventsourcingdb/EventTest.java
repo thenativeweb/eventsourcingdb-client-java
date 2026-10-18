@@ -9,6 +9,7 @@ import io.thenativeweb.eventsourcingdb.testcontainers.Container;
 import java.security.InvalidKeyException;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
+import java.security.SignatureException;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
@@ -85,7 +86,7 @@ class EventTest {
             container = Database.start();
             var event = tamper(writeEvent(new EventData(42)), "hash", "0".repeat(64));
 
-            var exception = assertThrows(EventSourcingDbException.class, event::verifyHash);
+            var exception = assertThrows(HashVerificationFailedException.class, event::verifyHash);
             assertEquals("hash verification failed", exception.getMessage());
         }
     }
@@ -109,7 +110,7 @@ class EventTest {
             var event = tamper(writeEvent(new EventData(42)), "hash", "0".repeat(64));
 
             var exception = assertThrows(
-                    EventSourcingDbException.class, () -> event.verifySignature(container.getVerificationKey()));
+                    HashVerificationFailedException.class, () -> event.verifySignature(container.getVerificationKey()));
             assertEquals("hash verification failed", exception.getMessage());
         }
 
@@ -133,9 +134,22 @@ class EventTest {
             var otherVerificationKey =
                     KeyPairGenerator.getInstance("Ed25519").generateKeyPair().getPublic();
 
-            var exception =
-                    assertThrows(EventSourcingDbException.class, () -> event.verifySignature(otherVerificationKey));
+            var exception = assertThrows(
+                    SignatureVerificationFailedException.class, () -> event.verifySignature(otherVerificationKey));
             assertEquals("signature verification failed", exception.getMessage());
+        }
+
+        @Test
+        void throwsIfTheSignatureCanNotBeRead() {
+            container = Database.startWithSigningKey();
+            var event = writeEvent(new EventData(42));
+            var tamperedEvent = tamper(event, "signature", "esdb:signature:v1:00");
+
+            var exception = assertThrows(
+                    SignatureVerificationFailedException.class,
+                    () -> tamperedEvent.verifySignature(container.getVerificationKey()));
+            assertEquals("failed to verify signature", exception.getMessage());
+            assertInstanceOf(SignatureException.class, exception.getCause());
         }
 
         @Test

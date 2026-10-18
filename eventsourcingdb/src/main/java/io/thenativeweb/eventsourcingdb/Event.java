@@ -5,6 +5,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import java.security.MessageDigest;
 import java.security.PublicKey;
 import java.security.Signature;
+import java.security.SignatureException;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Optional;
@@ -158,7 +159,7 @@ public final class Event {
     /**
      * Verifies the integrity of the event, by recomputing its hash and comparing it to the hash stored in the event.
      *
-     * @throws EventSourcingDbException if the hashes differ
+     * @throws HashVerificationFailedException if the hashes differ
      */
     public void verifyHash() {
         var metadata = String.join(
@@ -169,7 +170,7 @@ public final class Event {
         var finalHash = sha256(metadataHash + dataHash);
 
         if (!finalHash.equals(hash)) {
-            throw new EventSourcingDbException("hash verification failed");
+            throw new HashVerificationFailedException();
         }
     }
 
@@ -178,8 +179,9 @@ public final class Event {
      * and then checks the signature of the hash.
      *
      * @param verificationKey the public Ed25519 key that matches the private key the server signs events with
-     * @throws EventSourcingDbException if the event has no signature, if the hash or the signature does not verify, or if
-     *     the key is no Ed25519 key
+     * @throws HashVerificationFailedException if the hash does not verify
+     * @throws SignatureVerificationFailedException if the signature does not verify
+     * @throws EventSourcingDbException if the event has no signature, or if the key is no Ed25519 key
      */
     public void verifySignature(PublicKey verificationKey) {
         if (signature == null) {
@@ -194,14 +196,24 @@ public final class Event {
 
         var signatureBytes = HexFormat.of().parseHex(signature.substring(SIGNATURE_PREFIX.length()));
 
-        var isSignatureValid = Security.call("failed to verify signature", () -> {
-            var verifier = Signature.getInstance("Ed25519");
-            verifier.initVerify(verificationKey);
-            verifier.update(hash.getBytes(UTF_8));
-            return verifier.verify(signatureBytes);
+        var verifier = Security.call("failed to verify signature", () -> {
+            var signatureVerifier = Signature.getInstance("Ed25519");
+            signatureVerifier.initVerify(verificationKey);
+            signatureVerifier.update(hash.getBytes(UTF_8));
+            return signatureVerifier;
         });
+
+        // The verifier accepted the key already, so a signature that it can
+        // not even read, e.g. one that was cut short, is one that does not
+        // match the hash.
+        boolean isSignatureValid;
+        try {
+            isSignatureValid = verifier.verify(signatureBytes);
+        } catch (SignatureException ex) {
+            throw new SignatureVerificationFailedException("failed to verify signature", ex);
+        }
         if (!isSignatureValid) {
-            throw new EventSourcingDbException("signature verification failed");
+            throw new SignatureVerificationFailedException();
         }
     }
 

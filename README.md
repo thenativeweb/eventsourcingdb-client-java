@@ -618,7 +618,7 @@ var eventType = client.readEventType("io.eventsourcingdb.library.book-acquired")
 
 ### Verifying an Event's Hash
 
-To verify the integrity of an event, call the `verifyHash` method on the event instance. This recomputes the event's hash locally and compares it to the hash stored in the event. If the hashes differ, the method throws an exception:
+To verify the integrity of an event, call the `verifyHash` method on the event instance. This recomputes the event's hash locally and compares it to the hash stored in the event. If the hashes differ, the method throws a `HashVerificationFailedException`:
 
 ```java
 event.verifyHash();
@@ -630,7 +630,7 @@ event.verifyHash();
 
 To verify the authenticity of an event, call the `verifySignature` method on the event instance. This requires the public key that matches the private key used for signing on the server.
 
-The method first verifies the event's hash, and then checks the signature. If any verification step fails, it throws an exception:
+The method first verifies the event's hash, and then checks the signature. If the hash does not verify, it throws a `HashVerificationFailedException`, and if the signature does not, a `SignatureVerificationFailedException`. If the event has no signature, or the key is no Ed25519 key, it throws an `EventSourcingDbException`:
 
 ```java
 PublicKey verificationKey = // public Ed25519 key
@@ -680,6 +680,8 @@ try {
   // ...
 }
 ```
+
+If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
 
 If observing events or running an EventQL query receives nothing for 30 seconds, not even a heartbeat, e.g. because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and observing or the query ends with a `HeartbeatTimeoutException`.
 
