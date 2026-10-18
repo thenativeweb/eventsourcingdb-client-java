@@ -64,7 +64,7 @@ client.verifyApiToken();
 
 ### Configuring the HTTP Client
 
-By default, the client creates an HTTP client of its own, which gives up connecting to the server after 10 seconds. If you need to configure what it does not, e.g. other timeouts, a proxy, or TLS, create a `java.net.http.HttpClient` yourself, and hand it over using `ClientOptions`:
+By default, the client creates an HTTP client of its own. If you need to configure what it does not, e.g. a shorter connect timeout, a proxy, or TLS, create a `java.net.http.HttpClient` yourself, and hand it over using `ClientOptions`:
 
 ```java
 var httpClient = HttpClient.newBuilder()
@@ -77,6 +77,17 @@ var client = new Client(baseUrl, apiToken, new ClientOptions()
 ```
 
 *Note that the HTTP client belongs to you, so the client does not close it.*
+
+### Configuring the Stall Timeout
+
+A request fails once nothing arrives from the server for 30 seconds, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on. This covers every request, from connecting and waiting for the response to reading it, and the time starts over with everything that arrives, be it a byte, an event, or a heartbeat. So it does not limit how long a request may take: a read or an observation that keeps receiving events or heartbeats is never cut off, and the time you spend on an event does not count. A request that stalls ends with a `ConnectionStalledException`, and the client closes the connection. To change the time, hand it over using `ClientOptions`:
+
+```java
+var client = new Client(baseUrl, apiToken, new ClientOptions()
+  .withStallTimeout(Duration.ofSeconds(10)));
+```
+
+*Note that [running EventQL queries](#running-eventql-queries) and [observing events](#observing-events) end with a `HeartbeatTimeoutException` instead, once their stream has started.*
 
 ### Configuring the Serialization of Event Data
 
@@ -384,7 +395,7 @@ The query then ends with a `CancellationException`, so that an aborted query can
 
 #### Detecting a Stalled Connection
 
-While a query runs, the server sends a heartbeat every second whenever there is no row to send. If neither a row nor a heartbeat arrives for 30 seconds, e.g. because a proxy keeps the connection open but no longer passes anything on, the query ends with a `HeartbeatTimeoutException`, and the client closes the connection:
+While a query runs, the server sends a heartbeat every second whenever there is no row to send. If neither a row nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, the query ends with a `HeartbeatTimeoutException`, and the client closes the connection:
 
 ```java
 try (var rows = client.runEventQlQuery(
@@ -495,7 +506,7 @@ Observing then ends with a `CancellationException`. Since observing does not end
 
 #### Detecting a Stalled Connection
 
-While there are no new events, the server sends a heartbeat every second. If neither an event nor a heartbeat arrives for 30 seconds, e.g. because a proxy keeps the connection open but no longer passes anything on, observing ends with a `HeartbeatTimeoutException`, and the client closes the connection:
+While there are no new events, the server sends a heartbeat every second. If neither an event nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, observing ends with a `HeartbeatTimeoutException`, and the client closes the connection:
 
 ```java
 try (var events = client.observeEvents(
@@ -685,7 +696,7 @@ try {
 
 If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`, and if the hash of the event is of a version the client does not know, an `UnsupportedHashVersionException`. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
 
-If observing events or running an EventQL query receives nothing for 30 seconds, not even a heartbeat, e.g. because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and observing or the query ends with a `HeartbeatTimeoutException`.
+If a request receives nothing from the server for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and the request ends with a `ConnectionStalledException`. Once observing events or running an EventQL query has started, it ends with a `HeartbeatTimeoutException` instead, as nothing arriving there means that not even a heartbeat arrived.
 
 If a request is aborted, because its thread is interrupted, because its stream is closed from somewhere else, or because the client is closed, it ends with a `CancellationException`.
 

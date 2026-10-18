@@ -4,7 +4,6 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.http.HttpResponse;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -34,12 +33,12 @@ public final class DbApiException extends EventSourcingDbException {
         this.reason = reason;
     }
 
-    static DbApiException of(String action, HttpResponse<InputStream> response) {
-        try (var body = response.body()) {
+    static DbApiException of(String action, int statusCode, InputStream body) {
+        try (body) {
             var reason = new String(body.readNBytes(MAX_REASON_LENGTH), UTF_8).strip();
-            return new DbApiException(action, response.statusCode(), reason, null);
+            return new DbApiException(action, statusCode, reason, null);
         } catch (IOException ex) {
-            return new DbApiException(action, response.statusCode(), "", ex);
+            return new DbApiException(action, statusCode, "", ex);
         }
     }
 
