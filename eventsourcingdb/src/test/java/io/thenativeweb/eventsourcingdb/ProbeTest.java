@@ -1,5 +1,6 @@
 package io.thenativeweb.eventsourcingdb;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -208,6 +209,24 @@ class ProbeTest {
         try (var server = new ProbedServer((exchange, fakeServer) -> {
             exchange.getResponseHeaders().set("Server", "nginx");
             exchange.sendResponseHeaders(status, -1);
+        })) {
+            var client = server.client();
+
+            assertDoesNotThrow(client::ping);
+            assertEquals(List.of(FakeServer.PROBE_PATH, "/api/v1/ping"), server.paths());
+        }
+    }
+
+    // A proxy answers a path it does not pass on with a page of its own.
+    @ParameterizedTest
+    @ValueSource(ints = {404, 405})
+    void usesTheV1ApiIfAnotherServerAnswersThePingWithAPage(int status) {
+        try (var server = new ProbedServer((exchange, fakeServer) -> {
+            var page = "<html><body><h1>" + status + "</h1><hr><center>nginx</center></body></html>";
+            exchange.getResponseHeaders().set("Server", "nginx");
+            exchange.getResponseHeaders().set("Content-Type", "text/html");
+            exchange.sendResponseHeaders(status, page.length());
+            exchange.getResponseBody().write(page.getBytes(UTF_8));
         })) {
             var client = server.client();
 
