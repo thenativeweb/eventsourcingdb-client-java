@@ -3,11 +3,13 @@ package io.thenativeweb.eventsourcingdb;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.thenativeweb.eventsourcingdb.Operations.Operation;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
@@ -46,13 +48,16 @@ class ConnectionStalledExceptionTest {
         return new Client(server.url(), "secret", new ClientOptions().withStallTimeout(STALL_TIMEOUT));
     }
 
-    private static void assertStalled(Operation operation, Client client) {
+    // Checks the type and the message of the stall, and that its cause is of
+    // the given type, so that callers who check the cause can rely on it.
+    private static void assertStalled(Operation operation, Client client, Class<? extends Throwable> causeType) {
         var exception = assertThrows(
                 ConnectionStalledException.class, () -> operation.call().accept(client));
 
         assertEquals(
                 "failed to " + operation.action() + ", nothing arrived from the server for 300 milliseconds",
                 exception.getMessage());
+        assertInstanceOf(causeType, exception.getCause());
     }
 
     // Writes the text in pieces with a pause after each, so that the whole
@@ -72,7 +77,7 @@ class ConnectionStalledExceptionTest {
     @MethodSource("all")
     void endsARequestWhoseResponseDoesNotArrive(Operation operation) {
         try (var server = FakeServer.start((exchange, fakeServer) -> fakeServer.hang())) {
-            assertStalled(operation, clientWith(server));
+            assertStalled(operation, clientWith(server), HttpTimeoutException.class);
         }
     }
 
@@ -86,7 +91,7 @@ class ConnectionStalledExceptionTest {
             exchange.getResponseBody().flush();
             fakeServer.hang();
         })) {
-            assertStalled(operation, clientWith(server));
+            assertStalled(operation, clientWith(server), IOException.class);
         }
     }
 
@@ -98,7 +103,7 @@ class ConnectionStalledExceptionTest {
             FakeServer.writeLine(exchange, Lines.HEARTBEAT);
             fakeServer.hang();
         })) {
-            assertStalled(operation, clientWith(server));
+            assertStalled(operation, clientWith(server), IOException.class);
         }
     }
 
@@ -111,7 +116,7 @@ class ConnectionStalledExceptionTest {
             exchange.getResponseBody().flush();
             fakeServer.hang();
         })) {
-            assertStalled(Operation.request("ping", Client::ping), clientWith(server));
+            assertStalled(Operation.request("ping", Client::ping), clientWith(server), IOException.class);
         }
     }
 

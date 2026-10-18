@@ -80,7 +80,7 @@ var client = new Client(baseUrl, apiToken, new ClientOptions()
 
 ### Configuring the Stall Timeout
 
-A request fails once nothing arrives from the server for 30 seconds, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on. This covers every request, from connecting and waiting for the response to reading it, and the time starts over with everything that arrives, be it a byte, an event, or a heartbeat. So it does not limit how long a request may take: a read or an observation that keeps receiving events or heartbeats is never cut off, and the time you spend on an event does not count. A request that stalls ends with a `ConnectionStalledException`, and the client closes the connection. To change the time, hand it over using `ClientOptions`:
+A request fails once nothing arrives from the server for 30 seconds, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on. This covers every request, from connecting and waiting for the response to reading it, and the time starts over with everything that arrives, be it a byte, an event, or a heartbeat. So it does not limit how long a request may take: a read or an observation that keeps receiving events or heartbeats is never cut off, and the time you spend on an event does not count. A request that stalls ends with a `ConnectionStalledException`, and the client closes the connection. Its cause is a `java.net.http.HttpTimeoutException` if the response did not arrive in time, and the `IOException` that ended reading it if it stopped in the middle. To change the time, hand it over using `ClientOptions`:
 
 ```java
 var client = new Client(baseUrl, apiToken, new ClientOptions()

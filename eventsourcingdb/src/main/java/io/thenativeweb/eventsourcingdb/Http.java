@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -44,7 +45,15 @@ final class Http {
             throw new EventSourcingDbException("failed to " + action, ex.getCause());
         } catch (TimeoutException ex) {
             abort(response);
-            throw new ConnectionStalledException(action, stallTimeout);
+
+            // The stall timeout ends the wait before the JDK raises anything,
+            // so the stall carries the exception that the JDK uses for a
+            // response that does not arrive in time, which callers may check
+            // for, e.g. those who set timeouts on an HTTP client of their own.
+            var timeout =
+                    new HttpTimeoutException("nothing arrived from the server for " + Durations.describe(stallTimeout));
+            timeout.initCause(ex);
+            throw new ConnectionStalledException(action, stallTimeout, timeout);
         }
     }
 
@@ -81,7 +90,7 @@ final class Http {
     }
 
     private static InputStream guard(String action, InputStream body, Duration stallTimeout) {
-        return new StallGuard(body, stallTimeout, () -> new ConnectionStalledException(action, stallTimeout));
+        return new StallGuard(body, stallTimeout, ex -> new ConnectionStalledException(action, stallTimeout, ex));
     }
 
     // Tells a read that was interrupted apart from one that failed.

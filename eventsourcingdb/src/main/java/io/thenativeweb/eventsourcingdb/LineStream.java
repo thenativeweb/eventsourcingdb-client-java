@@ -13,6 +13,7 @@ import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -31,7 +32,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     private final String itemType;
     private final Parser<T> parser;
     private final Duration stallTimeout;
-    private final Supplier<? extends RuntimeException> stall;
+    private final Function<IOException, ? extends RuntimeException> stall;
     private final Set<LineStream<?>> openStreams;
 
     private volatile boolean isClosed;
@@ -45,7 +46,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             String itemType,
             Parser<T> parser,
             Duration stallTimeout,
-            Supplier<? extends RuntimeException> stall,
+            Function<IOException, ? extends RuntimeException> stall,
             Set<LineStream<?>> openStreams) {
         super(Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL);
         this.action = action;
@@ -58,7 +59,8 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     }
 
     // A stream that receives nothing for the stall timeout after its headers
-    // arrived ends with the exception that stall supplies.
+    // arrived ends with the exception that stall returns for the IOException
+    // that ended the read.
     // The stream adds itself to openStreams, and removes itself once it has
     // ended, so that the client can end the streams that are still open when
     // it is closed.
@@ -68,7 +70,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             String itemType,
             Parser<T> parser,
             Duration stallTimeout,
-            Supplier<? extends RuntimeException> stall,
+            Function<IOException, ? extends RuntimeException> stall,
             Set<LineStream<?>> openStreams) {
         var lineStream = new LineStream<>(action, request, itemType, parser, stallTimeout, stall, openStreams);
         openStreams.add(lineStream);

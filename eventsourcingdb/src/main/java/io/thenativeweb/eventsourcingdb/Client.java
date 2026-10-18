@@ -1,5 +1,6 @@
 package io.thenativeweb.eventsourcingdb;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -11,7 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Supplier;
+import java.util.function.Function;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
@@ -437,9 +438,9 @@ public final class Client implements AutoCloseable {
             String action, HttpRequest request, String itemType, LineStream.Parser<T> parser, boolean hasHeartbeats) {
         // On a stream with heartbeats, a stall means that the heartbeats
         // stopped, which HeartbeatTimeoutException reports.
-        Supplier<RuntimeException> stall = hasHeartbeats
-                ? () -> new HeartbeatTimeoutException(stallTimeout)
-                : () -> new ConnectionStalledException(action, stallTimeout);
+        Function<IOException, RuntimeException> stall = hasHeartbeats
+                ? ex -> new HeartbeatTimeoutException(stallTimeout)
+                : ex -> new ConnectionStalledException(action, stallTimeout, ex);
 
         synchronized (lock) {
             throwIfClosed();

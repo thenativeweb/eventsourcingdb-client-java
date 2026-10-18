@@ -6,15 +6,15 @@ import java.io.InputStream;
 import java.time.Duration;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
+import java.util.function.Function;
 
 // StallGuard bounds how long a read of the body of a response waits for the
 // server. If a read receives nothing for the stall timeout, the guard closes
 // the body, which ends the read, and the read throws the exception that stall
-// supplies. Every read that returns starts the time over, so a body that
-// keeps arriving, if only byte by byte, is never cut off. Only the time spent
-// within a read counts, so the time a caller spends between two reads, e.g.
-// on an event, does not.
+// returns for the IOException that ended the read. Every read that returns
+// starts the time over, so a body that keeps arriving, if only byte by byte,
+// is never cut off. Only the time spent within a read counts, so the time a
+// caller spends between two reads, e.g. on an event, does not.
 //
 // A timer per read is the simplest way to tell a read that waits from one
 // that returns at once. The readers of the client read in buffers rather than
@@ -23,10 +23,10 @@ final class StallGuard extends FilterInputStream {
     private static final ScheduledThreadPoolExecutor STALL_TIMERS = stallTimers();
 
     private final long stallTimeoutNanos;
-    private final Supplier<? extends RuntimeException> stall;
+    private final Function<IOException, ? extends RuntimeException> stall;
     private volatile boolean hasStalled;
 
-    StallGuard(InputStream body, Duration stallTimeout, Supplier<? extends RuntimeException> stall) {
+    StallGuard(InputStream body, Duration stallTimeout, Function<IOException, ? extends RuntimeException> stall) {
         super(body);
         // TimeUnit.convert saturates instead of overflowing, unlike
         // Duration.toNanos, so that a stall timeout of hundreds of years still
@@ -62,7 +62,7 @@ final class StallGuard extends FilterInputStream {
             return read.run();
         } catch (IOException ex) {
             if (hasStalled) {
-                throw stall.get();
+                throw stall.apply(ex);
             }
             throw ex;
         } finally {
