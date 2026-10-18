@@ -63,6 +63,16 @@ class ReadSubjectsTest {
         assertEquals(List.of("/test/1"), readSubjects("/test/1", false));
     }
 
+    // The server names a subject without a slash at its end, e.g. /test for
+    // /test/, whichever API the client reads it through.
+    @Test
+    void readsTheSubjectAloneAsTheServerNamesIt() {
+        writeTwoEvents();
+
+        assertEquals(List.of("/test"), readSubjects("/test/", false));
+        assertEquals(List.of("/"), readSubjects("/", false));
+    }
+
     @Test
     void readsNoSubjectIfThereAreNoEventsWithinIt() {
         writeTwoEvents();

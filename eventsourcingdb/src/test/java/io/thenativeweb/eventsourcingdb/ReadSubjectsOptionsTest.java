@@ -2,6 +2,7 @@ package io.thenativeweb.eventsourcingdb;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -46,6 +47,25 @@ class ReadSubjectsOptionsTest {
     void keepsEverySubjectFromTheV1ApiIfItIsToReadRecursively(String subject) {
         try (var server = streamingSubjects(ApiVersion.V1)) {
             assertEquals(List.of("/test", "/test/1", "/test/2"), readSubjects(server, subject, true));
+        }
+    }
+
+    // The server names a subject with a slash in front and none at the end,
+    // e.g. /a/b for /a/b/, and lists the subject first, followed by those
+    // nested in it, as EventSourcingDB 1.2.0 does.
+    @ParameterizedTest
+    @CsvSource(
+            delimiter = '|',
+            value = {"/a/b/ | /a/b;/a/b/c | /a/b", "/ | /;/a;/a/b | /", "/a | /a;/a/b | /a"})
+    void keepsTheSubjectAloneFromTheV1ApiAsTheServerNamesIt(String subject, String subjectsRead, String expected) {
+        var api = ApiVersion.V1;
+
+        try (var server = FakeServer.streaming(
+                api,
+                Arrays.stream(subjectsRead.split(";"))
+                        .map(subjectRead -> Lines.subject(api, subjectRead))
+                        .toArray(String[]::new))) {
+            assertEquals(List.of(expected), readSubjects(server, subject, false));
         }
     }
 
