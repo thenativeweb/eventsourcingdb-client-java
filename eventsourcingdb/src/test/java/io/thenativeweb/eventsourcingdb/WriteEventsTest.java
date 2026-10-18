@@ -109,7 +109,7 @@ class WriteEventsTest {
         var exception = assertThrows(
                 DbApiException.class,
                 () -> client.writeEvents(List.of(candidate(42)), List.of(new IsSubjectPristinePrecondition("/test"))));
-        assertEquals(409, exception.statusCode());
+        assertEquals(ErrorCode.PRECONDITION_VIOLATED, exception.code());
     }
 
     @Test
@@ -117,7 +117,7 @@ class WriteEventsTest {
         var exception = assertThrows(
                 DbApiException.class,
                 () -> client.writeEvents(List.of(candidate(42)), List.of(new IsSubjectPopulatedPrecondition("/test"))));
-        assertEquals(409, exception.statusCode());
+        assertEquals(ErrorCode.PRECONDITION_VIOLATED, exception.code());
 
         client.writeEvents(List.of(candidate(23)));
         var writtenEvents =
@@ -133,7 +133,7 @@ class WriteEventsTest {
                 DbApiException.class,
                 () -> client.writeEvents(
                         List.of(candidate(42)), List.of(new IsSubjectOnEventIdPrecondition("/test", "1"))));
-        assertEquals(409, exception.statusCode());
+        assertEquals(ErrorCode.PRECONDITION_VIOLATED, exception.code());
 
         var writtenEvents =
                 client.writeEvents(List.of(candidate(42)), List.of(new IsSubjectOnEventIdPrecondition("/test", "0")));
@@ -149,7 +149,7 @@ class WriteEventsTest {
                 () -> client.writeEvents(
                         List.of(candidate(42)),
                         List.of(new IsEventQlQueryTruePrecondition("FROM e IN events PROJECT INTO COUNT() == 0"))));
-        assertEquals(409, exception.statusCode());
+        assertEquals(ErrorCode.PRECONDITION_VIOLATED, exception.code());
     }
 
     @Test
@@ -175,10 +175,9 @@ class WriteEventsTest {
                         Map.of("value", 23, "extra", true)))));
 
         assertEquals("write events", exception.action());
-        assertEquals(409, exception.statusCode());
-        assertTrue(exception.reason().endsWith("additionalProperties 'extra' not allowed"), exception.reason());
-        assertEquals(
-                "failed to write events, got HTTP status code '409', expected '200': " + exception.reason(),
-                exception.getMessage());
+        assertEquals(ErrorCode.EVENT_SCHEMA_VIOLATED, exception.code());
+        assertTrue(
+                exception.description().contains("additionalProperties 'extra' not allowed"), exception.description());
+        assertTrue(exception.getMessage().endsWith(exception.description()), exception.getMessage());
     }
 }

@@ -28,15 +28,19 @@ final class Http {
 
     // Waits for the server to answer with its headers, for the stall timeout
     // at most, which covers connecting and sending the request as well.
-    // Interrupting the waiting thread cancels the request.
+    // Interrupting the waiting thread cancels the request. A status code
+    // other than 200 ends it with a DbApiException, whose code codes tells.
     static HttpResponse<InputStream> await(
-            String action, CompletableFuture<HttpResponse<InputStream>> response, Duration stallTimeout) {
+            String action,
+            CompletableFuture<HttpResponse<InputStream>> response,
+            Duration stallTimeout,
+            CodeMapping codes) {
         try {
             // TimeUnit.convert saturates instead of overflowing, unlike
             // Duration.toNanos, so that a stall timeout of hundreds of years
             // still works.
             var stallTimeoutNanos = TimeUnit.NANOSECONDS.convert(stallTimeout);
-            return check(action, response.get(stallTimeoutNanos, TimeUnit.NANOSECONDS), stallTimeout);
+            return check(action, response.get(stallTimeoutNanos, TimeUnit.NANOSECONDS), stallTimeout, codes);
         } catch (InterruptedException ex) {
             response.cancel(true);
             Thread.currentThread().interrupt();
@@ -58,7 +62,7 @@ final class Http {
     }
 
     private static HttpResponse<InputStream> check(
-            String action, HttpResponse<InputStream> response, Duration stallTimeout) {
+            String action, HttpResponse<InputStream> response, Duration stallTimeout, CodeMapping codes) {
         var serverHeader = response.headers().firstValue("Server").orElse("");
         if (!serverHeader.startsWith("EventSourcingDB/")) {
             close(response.body());
@@ -66,7 +70,12 @@ final class Http {
         }
 
         if (response.statusCode() != 200) {
-            throw DbApiException.of(action, response.statusCode(), guard(action, response.body(), stallTimeout));
+            throw DbApiException.ofStatus(
+                    action,
+                    response.statusCode(),
+                    response.headers(),
+                    guard(action, response.body(), stallTimeout),
+                    codes);
         }
 
         return response;

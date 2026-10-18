@@ -22,8 +22,8 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * A client for an EventSourcingDB instance.
  *
- * <p>Every method that sends a request throws a {@link DbApiException} if the server answers with an unexpected HTTP
- * status code, and an {@link InvalidServerHeaderException} if the server is not an EventSourcingDB. If a request fails
+ * <p>Every method that sends a request throws a {@link DbApiException} if the server reports an error, e.g. a
+ * precondition that does not hold, and an {@link InvalidServerHeaderException} if the server is not an EventSourcingDB. If a request fails
  * on its way, e.g. because the server can not be reached, the method throws an {@link EventSourcingDbException}. If
  * nothing arrives from the server for the stall timeout, 30 seconds by default, it throws a
  * {@link ConnectionStalledException}; see {@link ClientOptions#withStallTimeout(Duration)}.
@@ -104,7 +104,7 @@ public final class Client implements AutoCloseable {
         var request =
                 HttpRequest.newBuilder(baseUrl.resolve("/api/v1/ping")).GET().build();
 
-        var result = Json.MAPPER.readTree(request("ping", request));
+        var result = Json.MAPPER.readTree(request("ping", request, V1ErrorCodes.ANY_REQUEST));
         if (!"io.eventsourcingdb.api.ping-received".equals(result.path("type").asString())) {
             throw new EventSourcingDbException("failed to ping");
         }
@@ -113,7 +113,7 @@ public final class Client implements AutoCloseable {
     /**
      * Verifies the API token.
      *
-     * @throws DbApiException with status code 401 if the API token is invalid
+     * @throws DbApiException with status 401 if the API token is invalid
      * @throws EventSourcingDbException if the instance does not confirm the API token
      */
     public void verifyApiToken() {
@@ -121,7 +121,7 @@ public final class Client implements AutoCloseable {
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
 
-        var result = Json.MAPPER.readTree(request("verify API token", request));
+        var result = Json.MAPPER.readTree(request("verify API token", request, V1ErrorCodes.ANY_REQUEST));
         if (!"io.eventsourcingdb.api.api-token-verified"
                 .equals(result.path("type").asString())) {
             throw new EventSourcingDbException("failed to verify API token");
@@ -147,8 +147,8 @@ public final class Client implements AutoCloseable {
      * @param events the events to write
      * @param preconditions the preconditions that must hold, e.g. an {@link IsSubjectPristinePrecondition}
      * @return the written events, including the fields the server adds, such as their IDs
-     * @throws DbApiException with status code 409 if a precondition does not hold, or if an event does not match the
-     *     schema of its type, in which case the reason tells which
+     * @throws DbApiException with the code {@link ErrorCode#PRECONDITION_VIOLATED} if a precondition does not hold, or
+     *     {@link ErrorCode#EVENT_SCHEMA_VIOLATED} if an event does not match the schema of its type
      */
     public List<Event> writeEvents(List<EventCandidate> events, List<Precondition> preconditions) {
         var body = Json.MAPPER.createObjectNode();
@@ -176,7 +176,7 @@ public final class Client implements AutoCloseable {
             }
         }
 
-        var response = request("write events", post("/api/v1/write-events", body));
+        var response = request("write events", post("/api/v1/write-events", body), V1ErrorCodes.WRITE_EVENTS);
 
         return RawJson.readArray(response, "data").stream()
                 .map(cloudEvent -> Event.from(cloudEvent.tree(), cloudEvent.raw(), dataMapper))
@@ -233,7 +233,13 @@ public final class Client implements AutoCloseable {
                     toRequest(fromLatestEvent.subject(), fromLatestEvent.type(), fromLatestEvent.ifEventIsMissing()));
         }
 
-        return stream("read events", post("/api/v1/read-events", body), "event", this::parseEvent, false);
+        return stream(
+                "read events",
+                post("/api/v1/read-events", body),
+                "event",
+                this::parseEvent,
+                false,
+                V1ErrorCodes.READ_EVENTS);
     }
 
     /**
@@ -267,7 +273,13 @@ public final class Client implements AutoCloseable {
                     toRequest(fromLatestEvent.subject(), fromLatestEvent.type(), fromLatestEvent.ifEventIsMissing()));
         }
 
-        return stream("observe events", post("/api/v1/observe-events", body), "event", this::parseEvent, true);
+        return stream(
+                "observe events",
+                post("/api/v1/observe-events", body),
+                "event",
+                this::parseEvent,
+                true,
+                V1ErrorCodes.ANY_REQUEST);
     }
 
     private static ObjectNode toRequest(Bound bound) {
@@ -320,7 +332,13 @@ public final class Client implements AutoCloseable {
         var body = Json.MAPPER.createObjectNode();
         body.put("query", query);
 
-        return stream("run EventQL query", post("/api/v1/run-eventql-query", body), "row", parser, true);
+        return stream(
+                "run EventQL query",
+                post("/api/v1/run-eventql-query", body),
+                "row",
+                parser,
+                true,
+                V1ErrorCodes.ANY_REQUEST);
     }
 
     /**
@@ -339,7 +357,8 @@ public final class Client implements AutoCloseable {
                 post("/api/v1/read-subjects", body),
                 "subject",
                 (payload, rawData) -> payload.path("subject").asString(),
-                false);
+                false,
+                V1ErrorCodes.ANY_REQUEST);
     }
 
     /**
@@ -354,7 +373,8 @@ public final class Client implements AutoCloseable {
                 post("/api/v1/read-event-types", Json.MAPPER.createObjectNode()),
                 "eventType",
                 (payload, rawData) -> EventType.from(payload),
-                false);
+                false,
+                V1ErrorCodes.ANY_REQUEST);
     }
 
     /**
@@ -362,13 +382,13 @@ public final class Client implements AutoCloseable {
      *
      * @param eventType the event type, e.g. {@code io.eventsourcingdb.library.book-acquired}
      * @return the event type
-     * @throws DbApiException with status code 404 if the event type does not exist, or 400 if it is malformed
+     * @throws DbApiException with the code {@link ErrorCode#EVENT_TYPE_UNKNOWN} if the event type does not exist
      */
     public EventType readEventType(String eventType) {
         var body = Json.MAPPER.createObjectNode();
         body.put("eventType", eventType);
 
-        var response = request("read event type", post("/api/v1/read-event-type", body));
+        var response = request("read event type", post("/api/v1/read-event-type", body), V1ErrorCodes.READ_EVENT_TYPE);
         return EventType.from(Json.MAPPER.readTree(response));
     }
 
@@ -378,14 +398,18 @@ public final class Client implements AutoCloseable {
      *
      * @param eventType the event type, e.g. {@code io.eventsourcingdb.library.book-acquired}
      * @param schema the JSON schema, e.g. as nested maps and lists
-     * @throws DbApiException with status code 409 if a schema is already registered for the event type
+     * @throws DbApiException with the code {@link ErrorCode#EVENT_SCHEMA_ALREADY_REGISTERED} if a schema is already
+     *     registered for the event type
      */
     public void registerEventSchema(String eventType, Map<String, ?> schema) {
         var body = Json.MAPPER.createObjectNode();
         body.put("eventType", eventType);
         body.set("schema", Json.MAPPER.valueToTree(schema));
 
-        request("register event schema", post("/api/v1/register-event-schema", body));
+        request(
+                "register event schema",
+                post("/api/v1/register-event-schema", body),
+                V1ErrorCodes.REGISTER_EVENT_SCHEMA);
     }
 
     private HttpRequest post(String path, JsonNode body) {
@@ -403,7 +427,7 @@ public final class Client implements AutoCloseable {
     // sent under the same lock under which close() marks the client as
     // closed, so that close() either sees the request and ends it, or the
     // request sees that the client is closed and is not sent at all.
-    private String request(String action, HttpRequest request) {
+    private String request(String action, HttpRequest request, CodeMapping codes) {
         Http.throwIfInterrupted(action);
 
         CompletableFuture<HttpResponse<InputStream>> response;
@@ -417,7 +441,7 @@ public final class Client implements AutoCloseable {
         }
 
         try {
-            return Http.readBody(action, Http.await(action, response, stallTimeout), stallTimeout);
+            return Http.readBody(action, Http.await(action, response, stallTimeout, codes), stallTimeout);
         } catch (RuntimeException ex) {
             if (isClosed) {
                 throw Http.cancellation(action, ex);
@@ -435,7 +459,12 @@ public final class Client implements AutoCloseable {
     }
 
     private <T> Stream<T> stream(
-            String action, HttpRequest request, String itemType, LineStream.Parser<T> parser, boolean hasHeartbeats) {
+            String action,
+            HttpRequest request,
+            String itemType,
+            LineStream.Parser<T> parser,
+            boolean hasHeartbeats,
+            CodeMapping codes) {
         // On a stream with heartbeats, a stall means that the heartbeats
         // stopped, which HeartbeatTimeoutException reports.
         Function<IOException, RuntimeException> stall = hasHeartbeats
@@ -452,6 +481,7 @@ public final class Client implements AutoCloseable {
                     parser,
                     stallTimeout,
                     stall,
+                    codes,
                     openStreams);
         }
     }

@@ -34,7 +34,7 @@ class VerifyApiTokenTest {
         var client = new Client(container.getBaseUrl(), "invalid-token");
 
         var exception = assertThrows(DbApiException.class, client::verifyApiToken);
-        assertEquals(401, exception.statusCode());
+        assertEquals(401, exception.status());
     }
 
     @Test

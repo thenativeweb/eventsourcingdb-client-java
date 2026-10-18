@@ -50,10 +50,14 @@ class StreamTest {
                 var subjects = new Client(server.url(), "secret").readSubjects("/")) {
             var subjectsRead = new ArrayList<String>();
 
-            var exception = assertThrows(EventSourcingDbException.class, () -> subjects.forEach(subjectsRead::add));
+            var exception = assertThrows(DbApiException.class, () -> subjects.forEach(subjectsRead::add));
 
             assertEquals(List.of("/"), subjectsRead);
             assertEquals("failed to read subjects, got error: something went wrong", exception.getMessage());
+            assertEquals(200, exception.status());
+            assertEquals("", exception.code());
+            assertEquals("something went wrong", exception.description());
+            assertEquals(Json.MAPPER.createObjectNode(), exception.details());
         }
     }
 

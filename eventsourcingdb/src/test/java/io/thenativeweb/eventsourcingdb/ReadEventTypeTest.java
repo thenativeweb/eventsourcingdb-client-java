@@ -32,22 +32,16 @@ class ReadEventTypeTest {
         var exception =
                 assertThrows(DbApiException.class, () -> client.readEventType("io.eventsourcingdb.test.nonexistent"));
 
-        assertEquals(404, exception.statusCode());
-        assertFalse(exception.reason().isEmpty());
-        assertEquals(
-                "failed to read event type, got HTTP status code '404', expected '200': " + exception.reason(),
-                exception.getMessage());
+        assertEquals(ErrorCode.EVENT_TYPE_UNKNOWN, exception.code());
+        assertFalse(exception.description().isEmpty());
     }
 
     @Test
     void failsIfTheEventTypeIsMalformed() {
         var exception = assertThrows(DbApiException.class, () -> client.readEventType("io.eventsourcingdb.test."));
 
-        assertEquals(400, exception.statusCode());
-        assertFalse(exception.reason().isEmpty());
-        assertEquals(
-                "failed to read event type, got HTTP status code '400', expected '200': " + exception.reason(),
-                exception.getMessage());
+        assertEquals(400, exception.status());
+        assertFalse(exception.description().isEmpty());
     }
 
     @Test

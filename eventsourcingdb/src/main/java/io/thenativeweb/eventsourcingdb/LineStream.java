@@ -33,6 +33,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     private final Parser<T> parser;
     private final Duration stallTimeout;
     private final Function<IOException, ? extends RuntimeException> stall;
+    private final CodeMapping codes;
     private final Set<LineStream<?>> openStreams;
 
     private volatile boolean isClosed;
@@ -47,6 +48,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             Parser<T> parser,
             Duration stallTimeout,
             Function<IOException, ? extends RuntimeException> stall,
+            CodeMapping codes,
             Set<LineStream<?>> openStreams) {
         super(Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL);
         this.action = action;
@@ -55,6 +57,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
         this.parser = parser;
         this.stallTimeout = stallTimeout;
         this.stall = stall;
+        this.codes = codes;
         this.openStreams = openStreams;
     }
 
@@ -71,8 +74,9 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             Parser<T> parser,
             Duration stallTimeout,
             Function<IOException, ? extends RuntimeException> stall,
+            CodeMapping codes,
             Set<LineStream<?>> openStreams) {
-        var lineStream = new LineStream<>(action, request, itemType, parser, stallTimeout, stall, openStreams);
+        var lineStream = new LineStream<>(action, request, itemType, parser, stallTimeout, stall, codes, openStreams);
         openStreams.add(lineStream);
         return StreamSupport.stream(lineStream, false).onClose(lineStream::close);
     }
@@ -116,8 +120,8 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
                 return true;
             }
             if (type.equals("error")) {
-                throw new EventSourcingDbException("failed to " + action + ", got error: "
-                        + payload.path("error").asString());
+                throw DbApiException.ofAnswer(
+                        action, "", payload.path("error").asString(), Json.MAPPER.createObjectNode());
             }
 
             throw new EventSourcingDbException("failed to handle unsupported line type: " + type);
@@ -165,7 +169,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
 
         InputStream body;
         try {
-            body = Http.await(action, response, stallTimeout).body();
+            body = Http.await(action, response, stallTimeout, codes).body();
         } catch (RuntimeException ex) {
             throwIfClosed();
             throw ex;

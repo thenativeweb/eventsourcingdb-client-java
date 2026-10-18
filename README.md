@@ -655,7 +655,7 @@ event.verifySignature(verificationKey);
 
 All exceptions the client throws are unchecked. Those that come from the client itself extend `EventSourcingDbException`.
 
-If the server answers a request with an unexpected HTTP status code, the client throws a `DbApiException`. It contains the `statusCode` and the `reason` the server gives, so you can tell failures apart without parsing the error message:
+If the server reports an error, the client throws a `DbApiException`. It contains the `code` of the error, together with its `description`, its `details`, and the HTTP `status`, so you can tell failures apart without parsing the error message. The code is the URL of the page in the documentation that explains the error, e.g. `https://docs.eventsourcingdb.io/errors/precondition-violated`. Compare it with the constants of `ErrorCode`:
 
 ```java
 try {
@@ -668,12 +668,12 @@ try {
     )
   );
 } catch (DbApiException ex) {
-  switch (ex.statusCode()) {
-    case 409 -> {
-      // ex.reason() tells why, e.g. "state conflict: precondition failed".
-    }
-    case 401 -> {
+  switch (ex.code()) {
+    case ErrorCode.PRECONDITION_VIOLATED -> {
       // ...
+    }
+    case ErrorCode.EVENT_SCHEMA_VIOLATED -> {
+      // ex.description() tells why, and ex.details() which event.
     }
     default -> {
       // ...
@@ -682,7 +682,20 @@ try {
 }
 ```
 
-*Note that different failures may share a status code: a failed precondition and an event that does not match its schema are both answered with `409`, and only their reasons differ.*
+The server reports an error in one of two ways. If it accepts a request and the request fails nevertheless, e.g. because a precondition does not hold, the status is `200`, and the code names the error. If it refuses a request, e.g. because the API token is invalid, the status is the status code it answered with, e.g. `401`, and the code is empty.
+
+If the server refuses a request because the client sent too many, the status is `429`, and `retryAfter` tells how long the server asks you to wait before you send the request again, if it says so. The client does not repeat the request on its own:
+
+```java
+try {
+  client.ping();
+} catch (DbApiException ex) {
+  if (ex.status() == 429) {
+    var timeToWait = ex.retryAfter().orElse(Duration.ofSeconds(1));
+    // ...
+  }
+}
+```
 
 If the server is not an EventSourcingDB, e.g. because a proxy answers in its place, the client throws an `InvalidServerHeaderException`:
 
