@@ -31,8 +31,18 @@ public final class EventSourcingDbAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     Client eventSourcingDbClient(
-            EventSourcingDbConnectionDetails connectionDetails, ObjectProvider<JsonMapper> jsonMapper) {
+            EventSourcingDbConnectionDetails connectionDetails,
+            EventSourcingDbProperties properties,
+            ObjectProvider<JsonMapper> jsonMapper) {
         var options = new ClientOptions();
+
+        // Without the property, the client keeps its own default, so that the
+        // default is defined in one place. withStallTimeout rejects a stall
+        // timeout that is zero or negative, which fails the start.
+        var stallTimeout = properties.stallTimeout();
+        if (stallTimeout != null) {
+            options = options.withStallTimeout(stallTimeout);
+        }
 
         // The JSON mapper of Spring carries the configuration of the
         // application, e.g. its naming strategy, so the data of events is

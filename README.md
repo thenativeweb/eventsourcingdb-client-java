@@ -64,7 +64,7 @@ client.verifyApiToken();
 
 ### Configuring the HTTP Client
 
-By default, the client creates an HTTP client of its own, which gives up connecting to the server after 10 seconds. If you need to configure what it does not, e.g. other timeouts, a proxy, or TLS, create a `java.net.http.HttpClient` yourself, and hand it over using `ClientOptions`:
+By default, the client creates an HTTP client of its own. If you need to configure what it does not, e.g. a shorter connect timeout, a proxy, or TLS, create a `java.net.http.HttpClient` yourself, and hand it over using `ClientOptions`:
 
 ```java
 var httpClient = HttpClient.newBuilder()
@@ -77,6 +77,17 @@ var client = new Client(baseUrl, apiToken, new ClientOptions()
 ```
 
 *Note that the HTTP client belongs to you, so the client does not close it.*
+
+### Configuring the Stall Timeout
+
+A request fails once nothing arrives from the server for 30 seconds, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on. This covers every request, from connecting and waiting for the response to reading it, and the time starts over with everything that arrives, be it a byte, an event, or a heartbeat. So it does not limit how long a request may take: a read or an observation that keeps receiving events or heartbeats is never cut off, and the time you spend on an event does not count. A request that stalls ends with a `ConnectionStalledException`, and the client closes the connection. Its cause is a `java.net.http.HttpTimeoutException` if the response did not arrive in time, and the `IOException` that ended reading it if it stopped in the middle. To change the time, hand it over using `ClientOptions`:
+
+```java
+var client = new Client(baseUrl, apiToken, new ClientOptions()
+  .withStallTimeout(Duration.ofSeconds(10)));
+```
+
+*Note that [running EventQL queries](#running-eventql-queries) and [observing events](#observing-events) end with a `HeartbeatTimeoutException` instead, once their stream has started.*
 
 ### Configuring the Serialization of Event Data
 
@@ -384,7 +395,7 @@ The query then ends with a `CancellationException`, so that an aborted query can
 
 #### Detecting a Stalled Connection
 
-While a query runs, the server sends a heartbeat every second whenever there is no row to send. If neither a row nor a heartbeat arrives for 30 seconds, e.g. because a proxy keeps the connection open but no longer passes anything on, the query ends with a `HeartbeatTimeoutException`, and the client closes the connection:
+While a query runs, the server sends a heartbeat every second whenever there is no row to send. If neither a row nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, the query ends with a `HeartbeatTimeoutException`, and the client closes the connection:
 
 ```java
 try (var rows = client.runEventQlQuery(
@@ -495,7 +506,7 @@ Observing then ends with a `CancellationException`. Since observing does not end
 
 #### Detecting a Stalled Connection
 
-While there are no new events, the server sends a heartbeat every second. If neither an event nor a heartbeat arrives for 30 seconds, e.g. because a proxy keeps the connection open but no longer passes anything on, observing ends with a `HeartbeatTimeoutException`, and the client closes the connection:
+While there are no new events, the server sends a heartbeat every second. If neither an event nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, observing ends with a `HeartbeatTimeoutException`, and the client closes the connection:
 
 ```java
 try (var events = client.observeEvents(
@@ -618,11 +629,13 @@ var eventType = client.readEventType("io.eventsourcingdb.library.book-acquired")
 
 ### Verifying an Event's Hash
 
-To verify the integrity of an event, call the `verifyHash` method on the event instance. This recomputes the event's hash locally and compares it to the hash stored in the event. If the hashes differ, the method throws an exception:
+To verify the integrity of an event, call the `verifyHash` method on the event instance. This recomputes the event's hash locally and compares it to the hash stored in the event. If the hashes differ, the method throws a `HashVerificationFailedException`:
 
 ```java
 event.verifyHash();
 ```
+
+The hash of an event tells which version of the hash it is: a hash of version 2 starts with `esdb:hash:v2:`, and a hash of version 1 has no prefix. EventSourcingDB writes version 2 since version 1.3, and events written before keep their hash of version 1, so `verifyHash` supports both. If the hash is of a version the client does not know, e.g. one that starts with `esdb:hash:v3:`, the method throws an `UnsupportedHashVersionException`, whose message names the version. This does not mean that the event was tampered with, only that the client can not verify it; update the client to do so.
 
 *Note that this only verifies the hash. If you also want to verify the signature, you can skip this step and call `verifySignature` directly, which performs a hash verification internally.*
 
@@ -630,7 +643,7 @@ event.verifyHash();
 
 To verify the authenticity of an event, call the `verifySignature` method on the event instance. This requires the public key that matches the private key used for signing on the server.
 
-The method first verifies the event's hash, and then checks the signature. If any verification step fails, it throws an exception:
+The method first verifies the event's hash, and then checks the signature. If the hash does not verify, it throws a `HashVerificationFailedException`, and if the signature does not, a `SignatureVerificationFailedException`. If the event has no signature, or the key is no Ed25519 key, it throws an `EventSourcingDbException`, and if the signature is not hexadecimal, an `IllegalArgumentException`:
 
 ```java
 PublicKey verificationKey = // public Ed25519 key
@@ -681,7 +694,9 @@ try {
 }
 ```
 
-If observing events or running an EventQL query receives nothing for 30 seconds, not even a heartbeat, e.g. because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and observing or the query ends with a `HeartbeatTimeoutException`.
+If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`, and if the hash of the event is of a version the client does not know, an `UnsupportedHashVersionException`. A signature that is not hexadecimal throws an `IllegalArgumentException` instead. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
+
+If a request receives nothing from the server for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and the request ends with a `ConnectionStalledException`. Once observing events or running an EventQL query has started, it ends with a `HeartbeatTimeoutException` instead, as nothing arriving there means that not even a heartbeat arrived.
 
 If a request is aborted, because its thread is interrupted, because its stream is closed from somewhere else, or because the client is closed, it ends with a `CancellationException`.
 
@@ -812,6 +827,12 @@ public class BookService {
 ```
 
 If one of the two properties is not set, the application fails to start.
+
+To change the [stall timeout](#configuring-the-stall-timeout), which is 30 seconds by default, set `eventsourcingdb.stall-timeout`, e.g. to `10s`. A value of zero or less fails the start of the application:
+
+```properties
+eventsourcingdb.stall-timeout=10s
+```
 
 The client serializes and deserializes the data of events with the `JsonMapper` of Spring Boot, so the data follows the Jackson configuration of your application, e.g. its naming strategy. When the application shuts down, Spring Boot closes the client.
 

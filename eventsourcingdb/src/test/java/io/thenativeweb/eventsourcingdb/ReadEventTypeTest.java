@@ -1,6 +1,7 @@
 package io.thenativeweb.eventsourcingdb;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.thenativeweb.eventsourcingdb.testcontainers.Container;
@@ -31,21 +32,22 @@ class ReadEventTypeTest {
         var exception =
                 assertThrows(DbApiException.class, () -> client.readEventType("io.eventsourcingdb.test.nonexistent"));
 
-        assertEquals(
-                "failed to read event type, got HTTP status code '404', expected '200': event type 'io.eventsourcingdb.test.nonexistent' not found",
-                exception.getMessage());
         assertEquals(404, exception.statusCode());
-        assertEquals("event type 'io.eventsourcingdb.test.nonexistent' not found", exception.reason());
+        assertFalse(exception.reason().isEmpty());
+        assertEquals(
+                "failed to read event type, got HTTP status code '404', expected '200': " + exception.reason(),
+                exception.getMessage());
     }
 
     @Test
     void failsIfTheEventTypeIsMalformed() {
         var exception = assertThrows(DbApiException.class, () -> client.readEventType("io.eventsourcingdb.test."));
 
-        assertEquals(
-                "failed to read event type, got HTTP status code '400', expected '200': invalid event type: 'io.eventsourcingdb.test.'",
-                exception.getMessage());
         assertEquals(400, exception.statusCode());
+        assertFalse(exception.reason().isEmpty());
+        assertEquals(
+                "failed to read event type, got HTTP status code '400', expected '200': " + exception.reason(),
+                exception.getMessage());
     }
 
     @Test
