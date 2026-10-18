@@ -18,7 +18,8 @@ import tools.jackson.core.JacksonException;
 // API. Creating a client sends no request, so the first request of a client
 // asks the server whether it offers the v2 API, with a ping to the v2 API: a
 // server that does answers it, and one that does not answers 404 or 405, as
-// EventSourcingDB 1.2.0 does for every path of the v2 API it does not know.
+// EventSourcingDB 1.2.0 does for every path of the v2 API it does not know,
+// and so does a proxy in front of it that passes on the v1 API only.
 // The answer is kept for the client, so the server is asked only once.
 //
 // Any other outcome, e.g. a server that can not be reached, tells nothing, so
@@ -132,13 +133,16 @@ final class TransportChooser {
         if (answer == null) {
             throw failed(failure, hasStalled);
         }
-        if (!Http.isFromEventSourcingDb(answer)) {
-            throw new ProbeFailure(action -> new InvalidServerHeaderException());
-        }
 
+        // A 404 or a 405 means the v1 API, whichever server sends it, since a
+        // proxy that passes on the v1 API only answers the probe itself. The
+        // requests to the v1 API check that the server is an EventSourcingDB.
         var status = answer.statusCode();
         if (status == 404 || status == 405) {
             return v1;
+        }
+        if (!Http.isFromEventSourcingDb(answer)) {
+            throw new ProbeFailure(action -> new InvalidServerHeaderException());
         }
         if (status != 200) {
             var body = answer.body().getBytes(UTF_8);

@@ -199,13 +199,37 @@ class ProbeTest {
         assertInstanceOf(ConnectException.class, exception.getCause());
     }
 
-    @Test
-    void failsTheRequestIfTheProbeIsNotAnsweredByAnEventSourcingDb() {
-        try (var server = new ProbedServer((exchange, fakeServer) -> exchange.sendResponseHeaders(404, -1), V1)) {
+    // A proxy that passes on the v1 API only answers the probe itself. The
+    // requests to the v1 API afterwards check that the server is an
+    // EventSourcingDB, so the probe does not need to.
+    @ParameterizedTest
+    @ValueSource(ints = {404, 405})
+    void usesTheV1ApiIfAnotherServerDoesNotKnowThePathOfThePing(int status) {
+        try (var server = new ProbedServer((exchange, fakeServer) -> {
+            exchange.getResponseHeaders().set("Server", "nginx");
+            exchange.sendResponseHeaders(status, -1);
+        })) {
+            var client = server.client();
+
+            assertDoesNotThrow(client::ping);
+            assertEquals(List.of(FakeServer.PROBE_PATH, "/api/v1/ping"), server.paths());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {200, 500})
+    void failsTheRequestIfAnotherServerAnswersTheProbeOtherwise(int status) {
+        try (var server = new ProbedServer(
+                (exchange, fakeServer) -> {
+                    exchange.getResponseHeaders().set("Server", "nginx");
+                    exchange.sendResponseHeaders(status, -1);
+                },
+                V1)) {
             var client = server.client();
 
             assertThrows(InvalidServerHeaderException.class, client::ping);
             assertDoesNotThrow(client::ping);
+            assertEquals(2, server.probeCount());
         }
     }
 
