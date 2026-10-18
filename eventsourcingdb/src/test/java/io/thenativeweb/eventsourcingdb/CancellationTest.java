@@ -10,8 +10,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -41,9 +41,25 @@ class CancellationTest {
 
     private record Outcome(Throwable thrown, boolean wasInterrupted) {}
 
+    @FunctionalInterface
+    private interface Moment {
+        void await() throws InterruptedException;
+    }
+
     // Runs the operation in a thread of its own, interrupts the thread a while
     // after the server got the request, and returns how the operation ended.
     private static Outcome interruptAfterRequest(FakeServer server, Runnable operation) throws InterruptedException {
+        return interruptAt(
+                () -> {
+                    server.awaitRequest();
+                    Thread.sleep(Duration.ofMillis(300));
+                },
+                operation);
+    }
+
+    // Runs the operation in a thread of its own, interrupts the thread once
+    // the moment has come, and returns how the operation ended.
+    private static Outcome interruptAt(Moment moment, Runnable operation) throws InterruptedException {
         var thrown = new AtomicReference<Throwable>();
         var wasInterrupted = new AtomicBoolean();
 
@@ -56,8 +72,7 @@ class CancellationTest {
             wasInterrupted.set(Thread.currentThread().isInterrupted());
         });
 
-        server.awaitRequest();
-        Thread.sleep(Duration.ofMillis(300));
+        moment.await();
         thread.interrupt();
         thread.join();
 
@@ -155,29 +170,48 @@ class CancellationTest {
         });
     }
 
+    // The stream is closed once the caller has its first subject, rather than
+    // after a fixed time, which a slow machine may need to deliver it.
     @Test
     void aCloseEndsAStreamThatStopsInTheMiddle() {
         try (var server = streamingOneSubjectAndHanging();
                 var subjects = new Client(server.url(), "secret").readSubjects("/");
-                var scheduler = Executors.newSingleThreadScheduledExecutor()) {
+                var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var subjectsRead = new ArrayList<String>();
-            scheduler.schedule(subjects::close, 300, TimeUnit.MILLISECONDS);
+            var hasSubject = new CountDownLatch(1);
+            Runnable close = subjects::close;
+            executor.submit(() -> {
+                hasSubject.await();
+                close.run();
+                return null;
+            });
 
-            assertThrows(CancellationException.class, () -> subjects.forEach(subjectsRead::add));
+            assertThrows(
+                    CancellationException.class,
+                    () -> subjects.forEach(subject -> {
+                        subjectsRead.add(subject);
+                        hasSubject.countDown();
+                    }));
 
             assertEquals(List.of("/"), subjectsRead);
         }
     }
 
+    // The thread is interrupted once the caller has its first subject, rather
+    // than after a fixed time, which a slow machine may need to deliver it.
     @Test
     void anInterruptEndsAStreamThatStopsInTheMiddle() throws InterruptedException {
         try (var server = streamingOneSubjectAndHanging()) {
             var client = new Client(server.url(), "secret");
             var subjectsRead = new ArrayList<String>();
+            var hasSubject = new CountDownLatch(1);
 
-            var outcome = interruptAfterRequest(server, () -> {
+            var outcome = interruptAt(hasSubject::await, () -> {
                 try (var subjects = client.readSubjects("/")) {
-                    subjects.forEach(subjectsRead::add);
+                    subjects.forEach(subject -> {
+                        subjectsRead.add(subject);
+                        hasSubject.countDown();
+                    });
                 }
             });
 
