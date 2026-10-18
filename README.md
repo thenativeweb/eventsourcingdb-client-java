@@ -624,6 +624,8 @@ To verify the integrity of an event, call the `verifyHash` method on the event i
 event.verifyHash();
 ```
 
+The hash of an event tells which version of the hash it is: a hash of version 2 starts with `esdb:hash:v2:`, and a hash of version 1 has no prefix. EventSourcingDB writes version 2 since version 1.3, and events written before keep their hash of version 1, so `verifyHash` supports both. If the hash is of a version the client does not know, e.g. one that starts with `esdb:hash:v3:`, the method throws an `UnsupportedHashVersionException`, whose message names the version. This does not mean that the event was tampered with, only that the client can not verify it; update the client to do so.
+
 *Note that this only verifies the hash. If you also want to verify the signature, you can skip this step and call `verifySignature` directly, which performs a hash verification internally.*
 
 ### Verifying an Event's Signature
@@ -681,7 +683,7 @@ try {
 }
 ```
 
-If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
+If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`, and if the hash of the event is of a version the client does not know, an `UnsupportedHashVersionException`. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
 
 If observing events or running an EventQL query receives nothing for 30 seconds, not even a heartbeat, e.g. because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and observing or the query ends with a `HeartbeatTimeoutException`.
 

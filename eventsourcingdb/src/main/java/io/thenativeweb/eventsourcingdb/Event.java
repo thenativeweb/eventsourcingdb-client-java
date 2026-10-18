@@ -8,6 +8,7 @@ import java.security.Signature;
 import java.security.SignatureException;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.Objects;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
@@ -22,6 +23,15 @@ import tools.jackson.databind.json.JsonMapper;
  */
 public final class Event {
     private static final String SIGNATURE_PREFIX = "esdb:signature:v1:";
+
+    // A hash names its version with a prefix, except for a hash of version 1,
+    // which predates the prefix.
+    private static final String HASH_PREFIX = "esdb:hash:";
+    private static final String HASH_VERSION_2_PREFIX = HASH_PREFIX + "v2:";
+
+    // Stands for a field that the event does not have, e.g. a missing
+    // traceparent, in the input of a hash of version 2.
+    private static final String MISSING_FIELD = "-";
 
     private final String specVersion;
     private final String id;
@@ -159,19 +169,62 @@ public final class Event {
     /**
      * Verifies the integrity of the event, by recomputing its hash and comparing it to the hash stored in the event.
      *
+     * <p>The hash is recomputed in the version of the hash stored in the event: version 2, whose hash starts with
+     * {@code esdb:hash:v2:}, or version 1, whose hash has no prefix. An event keeps the version it was written with, so
+     * the events of a store may carry both.
+     *
      * @throws HashVerificationFailedException if the hashes differ
+     * @throws UnsupportedHashVersionException if the hash is of a version the client does not know, e.g.
+     *     {@code esdb:hash:v3:}
      */
     public void verifyHash() {
+        if (!computeHash().equals(hash)) {
+            throw new HashVerificationFailedException();
+        }
+    }
+
+    private String computeHash() {
+        if (hash.startsWith(HASH_VERSION_2_PREFIX)) {
+            return computeHashOfVersion2();
+        }
+        if (hash.startsWith(HASH_PREFIX)) {
+            var version = hash.substring(HASH_PREFIX.length()).split(":", 2)[0];
+            throw new UnsupportedHashVersionException(version);
+        }
+
+        return computeHashOfVersion1();
+    }
+
+    // Version 2 hashes the prefix and the fields, each on a line of its own,
+    // in a single pass. The data goes in exactly as the server sent it.
+    private String computeHashOfVersion2() {
+        var input = String.join(
+                "\n",
+                HASH_VERSION_2_PREFIX,
+                specVersion,
+                id,
+                predecessorHash,
+                timeFromServer,
+                source,
+                subject,
+                type,
+                dataContentType,
+                Objects.requireNonNullElse(traceParent, MISSING_FIELD),
+                Objects.requireNonNullElse(traceState, MISSING_FIELD),
+                dataFromServer);
+
+        return HASH_VERSION_2_PREFIX + sha256(input);
+    }
+
+    // Version 1 hashes the hash of the metadata and the hash of the data
+    // together. It covers neither traceparent nor tracestate.
+    private String computeHashOfVersion1() {
         var metadata = String.join(
                 "|", specVersion, id, predecessorHash, timeFromServer, source, subject, type, dataContentType);
 
         var metadataHash = sha256(metadata);
         var dataHash = sha256(dataFromServer);
-        var finalHash = sha256(metadataHash + dataHash);
-
-        if (!finalHash.equals(hash)) {
-            throw new HashVerificationFailedException();
-        }
+        return sha256(metadataHash + dataHash);
     }
 
     /**

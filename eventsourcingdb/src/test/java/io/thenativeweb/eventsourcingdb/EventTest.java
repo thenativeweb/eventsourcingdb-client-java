@@ -71,6 +71,25 @@ class EventTest {
             assertDoesNotThrow(event::verifyHash);
         }
 
+        // Version 2 of the hash covers the trace context, which version 1 does
+        // not.
+        @Test
+        void verifiesTheHashOfAnEventWithATraceContext() {
+            container = Database.start();
+            var event = container
+                    .getClient()
+                    .writeEvents(List.of(new EventCandidate(
+                            "https://www.eventsourcingdb.io",
+                            "/test",
+                            "io.eventsourcingdb.test",
+                            new EventData(42),
+                            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+                            "vendor=value")))
+                    .getFirst();
+
+            assertDoesNotThrow(event::verifyHash);
+        }
+
         @Test
         void verifiesTheHashOfAnEventWhoseDataTheServerEscapes() {
             container = Database.start();

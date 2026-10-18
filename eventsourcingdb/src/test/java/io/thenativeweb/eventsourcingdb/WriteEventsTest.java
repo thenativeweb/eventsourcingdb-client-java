@@ -52,7 +52,7 @@ class WriteEventsTest {
         assertEquals("application/json", event.dataContentType());
         assertEquals(new EventData(42), event.data(EventData.class));
         assertEquals(42, event.data().path("value").asInt());
-        assertEquals(64, event.hash().length());
+        assertTrue(event.hash().matches("(esdb:hash:v2:)?[0-9a-f]{64}"), event.hash());
         assertEquals("0".repeat(64), event.predecessorHash());
         assertTrue(Duration.between(event.time(), Instant.now()).abs().toMinutes() < 1);
         assertEquals(Optional.empty(), event.traceParent());
