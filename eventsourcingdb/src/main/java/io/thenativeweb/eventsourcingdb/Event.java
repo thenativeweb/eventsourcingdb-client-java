@@ -235,6 +235,7 @@ public final class Event {
      * @throws HashVerificationFailedException if the hash does not verify
      * @throws SignatureVerificationFailedException if the signature does not verify
      * @throws EventSourcingDbException if the event has no signature, or if the key is no Ed25519 key
+     * @throws IllegalArgumentException if the signature is not hexadecimal
      */
     public void verifySignature(PublicKey verificationKey) {
         if (signature == null) {

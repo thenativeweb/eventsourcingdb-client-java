@@ -643,7 +643,7 @@ The hash of an event tells which version of the hash it is: a hash of version 2 
 
 To verify the authenticity of an event, call the `verifySignature` method on the event instance. This requires the public key that matches the private key used for signing on the server.
 
-The method first verifies the event's hash, and then checks the signature. If the hash does not verify, it throws a `HashVerificationFailedException`, and if the signature does not, a `SignatureVerificationFailedException`. If the event has no signature, or the key is no Ed25519 key, it throws an `EventSourcingDbException`:
+The method first verifies the event's hash, and then checks the signature. If the hash does not verify, it throws a `HashVerificationFailedException`, and if the signature does not, a `SignatureVerificationFailedException`. If the event has no signature, or the key is no Ed25519 key, it throws an `EventSourcingDbException`, and if the signature is not hexadecimal, an `IllegalArgumentException`:
 
 ```java
 PublicKey verificationKey = // public Ed25519 key
@@ -694,7 +694,7 @@ try {
 }
 ```
 
-If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`, and if the hash of the event is of a version the client does not know, an `UnsupportedHashVersionException`. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
+If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`, and if the hash of the event is of a version the client does not know, an `UnsupportedHashVersionException`. A signature that is not hexadecimal throws an `IllegalArgumentException` instead. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
 
 If a request receives nothing from the server for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and the request ends with a `ConnectionStalledException`. Once observing events or running an EventQL query has started, it ends with a `HeartbeatTimeoutException` instead, as nothing arriving there means that not even a heartbeat arrived.
 

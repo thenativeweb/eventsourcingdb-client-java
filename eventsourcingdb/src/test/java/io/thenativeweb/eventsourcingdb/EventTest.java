@@ -15,6 +15,8 @@ import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.databind.node.ObjectNode;
 
 class EventTest {
@@ -169,6 +171,21 @@ class EventTest {
                     () -> tamperedEvent.verifySignature(container.getVerificationKey()));
             assertEquals("failed to verify signature", exception.getMessage());
             assertInstanceOf(SignatureException.class, exception.getCause());
+        }
+
+        // A signature that is not hexadecimal fails before the verifier sees
+        // it, with the exception of the JDK's HexFormat. Callers may catch it,
+        // so it stays as it is.
+        @ParameterizedTest
+        @ValueSource(strings = {"0", "zz"})
+        void throwsAnIllegalArgumentExceptionIfTheSignatureIsNotHexadecimal(String signature) {
+            container = Database.startWithSigningKey();
+            var event = writeEvent(new EventData(42));
+            var tamperedEvent = tamper(event, "signature", "esdb:signature:v1:" + signature);
+
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> tamperedEvent.verifySignature(container.getVerificationKey()));
         }
 
         @Test
