@@ -125,7 +125,16 @@ final class V1Transport implements Transport {
                 Envelope.V1,
                 StreamSpec.Ending.WITH_RESPONSE,
                 "eventType",
-                (payload, rawData) -> EventType.fromV1(payload));
+                (payload, rawData) -> eventTypeOf(payload));
+    }
+
+    // The v1 API names an event type by eventType, and tells by isPhantom
+    // whether it has no events.
+    private static EventType eventTypeOf(JsonNode eventType) {
+        return new EventType(
+                eventType.path("eventType").asString(),
+                !eventType.path("isPhantom").asBoolean(),
+                EventType.schemaOf(eventType.path("schema")));
     }
 
     @Override
@@ -135,7 +144,7 @@ final class V1Transport implements Transport {
 
         var response = requests.send(
                 "read event type", requests.post("/api/v1/read-event-type", body), V1ErrorCodes.READ_EVENT_TYPE);
-        return EventType.fromV1(Json.MAPPER.readTree(response));
+        return eventTypeOf(Json.MAPPER.readTree(response));
     }
 
     @Override
