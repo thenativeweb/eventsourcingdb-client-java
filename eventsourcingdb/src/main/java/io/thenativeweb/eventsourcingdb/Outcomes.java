@@ -48,11 +48,23 @@ final class Outcomes {
         if (failure instanceof DbApiException exception && isRefusal.test(exception)) {
             return failure;
         }
-        if (couldNotConnect(failure)) {
+        if (!doesTheJdkSendWritesAgain() && couldNotConnect(failure)) {
             return failure;
         }
 
         return new OutcomeUnknownException(action, failure);
+    }
+
+    // With the system property jdk.httpclient.enableAllMethodRetry, the JDK
+    // sends a write again over a new connection, if the connection it sent
+    // the write over closed before the answer arrived. A connection that can
+    // not be established then may follow on a write that the server stored
+    // already, so it tells nothing. The JDK takes an empty value for true.
+    // The property is read for each write, since the JDK reads it once, at a
+    // time the client does not know of.
+    private static boolean doesTheJdkSendWritesAgain() {
+        var value = System.getProperty("jdk.httpclient.enableAllMethodRetry");
+        return value != null && (value.isEmpty() || Boolean.parseBoolean(value));
     }
 
     // The JDK reports a connection that could not be established, e.g.

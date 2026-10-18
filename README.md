@@ -763,6 +763,8 @@ try {
 
 A write that certainly was not stored throws the failure itself instead: an `EventSourcingDbException` if the client could not connect to the server at all, and a `DbApiException` if the server refused the write, e.g. because a precondition does not hold, or because the client sent too many requests.
 
+*Note that the system property `jdk.httpclient.enableAllMethodRetry` makes the JDK send a write again if the connection closes before the answer arrives, which can store the write twice. If it is set, the client can not tell a write that could not connect from one that was sent again, so it throws an `OutcomeUnknownException` for that, too.*
+
 ### Using Testcontainers
 
 The test container lives in the `eventsourcingdb-testcontainers` artifact. Add it to the dependencies of your tests, e.g. with Gradle:

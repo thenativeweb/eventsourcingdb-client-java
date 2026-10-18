@@ -12,6 +12,7 @@ import java.net.http.HttpConnectTimeoutException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 import javax.net.ssl.SSLHandshakeException;
 import org.junit.jupiter.api.Test;
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.core.JacksonException;
 
 // A write that fails is certainly not stored only if the client could not
@@ -237,6 +239,42 @@ class OutcomeUnknownExceptionTest {
 
         assertSame(failure, Outcomes.ofWrite("write events", failure, Outcomes.V1_REFUSALS));
         assertSame(failure, Outcomes.ofWrite("write events", failure, Outcomes.V2_REFUSALS));
+    }
+
+    // With the system property, the JDK sends a write again over a new
+    // connection, if the connection it sent the write over closed before the
+    // answer arrived. A refused connect then follows on a write that the
+    // server may have stored already. The JDK takes an empty value for true.
+    @ParameterizedTest
+    @ValueSource(strings = {"", "true", "TRUE"})
+    void reportsAFailureToConnectAsUnknownIfTheJdkSendsWritesAgain(String value) {
+        var failure = new EventSourcingDbException("failed to write events", new ConnectException("refused"));
+
+        var outcome =
+                withRetryOfAllMethods(value, () -> Outcomes.ofWrite("write events", failure, Outcomes.V2_REFUSALS));
+
+        assertInstanceOf(OutcomeUnknownException.class, outcome);
+        assertSame(failure, outcome.getCause());
+    }
+
+    @Test
+    void reportsAFailureToConnectAsNotStoredIfTheJdkDoesNotSendWritesAgain() {
+        var failure = new EventSourcingDbException("failed to write events", new ConnectException("refused"));
+
+        var outcome =
+                withRetryOfAllMethods("false", () -> Outcomes.ofWrite("write events", failure, Outcomes.V2_REFUSALS));
+
+        assertSame(failure, outcome);
+    }
+
+    private static RuntimeException withRetryOfAllMethods(String value, Supplier<RuntimeException> classification) {
+        var property = "jdk.httpclient.enableAllMethodRetry";
+        System.setProperty(property, value);
+        try {
+            return classification.get();
+        } finally {
+            System.clearProperty(property);
+        }
     }
 
     @Test
