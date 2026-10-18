@@ -364,7 +364,7 @@ public final class Client implements AutoCloseable {
                 "read event types",
                 post("/api/v1/read-event-types", Json.MAPPER.createObjectNode()),
                 "eventType",
-                (payload, rawData) -> EventType.from(payload),
+                (payload, rawData) -> EventType.fromV1(payload),
                 V1ErrorCodes.ANY_REQUEST);
     }
 
@@ -380,7 +380,7 @@ public final class Client implements AutoCloseable {
         body.put("eventType", eventType);
 
         var response = request("read event type", post("/api/v1/read-event-type", body), V1ErrorCodes.READ_EVENT_TYPE);
-        return EventType.from(Json.MAPPER.readTree(response));
+        return EventType.fromV1(Json.MAPPER.readTree(response));
     }
 
     /**

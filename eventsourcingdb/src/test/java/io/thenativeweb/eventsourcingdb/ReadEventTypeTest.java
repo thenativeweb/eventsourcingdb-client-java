@@ -59,6 +59,6 @@ class ReadEventTypeTest {
 
         var eventType = client.readEventType("io.eventsourcingdb.test.foo");
 
-        assertEquals(new EventType("io.eventsourcingdb.test.foo", true, Optional.of(schema)), eventType);
+        assertEquals(new EventType("io.eventsourcingdb.test.foo", false, Optional.of(schema)), eventType);
     }
 }

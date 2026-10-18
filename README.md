@@ -597,6 +597,8 @@ try (var eventTypes = client.readEventTypes()) {
 }
 ```
 
+Each event type tells its name with `type`, whether events of the type were written with `hasEvents`, and the schema registered for it with `schema`, if there is one. An event type without events exists only because a schema is registered for it.
+
 #### Aborting Listing
 
 If you need to abort listing, stop consuming the stream. However, this only works if there is currently an event type to consume.
