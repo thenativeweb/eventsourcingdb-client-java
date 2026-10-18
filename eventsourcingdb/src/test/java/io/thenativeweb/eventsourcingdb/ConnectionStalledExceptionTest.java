@@ -74,8 +74,7 @@ class ConnectionStalledExceptionTest {
     // Checks the type and the message of the stall, and that its cause is of
     // the given type, so that callers who check the cause can rely on it.
     private static void assertStalled(Operation operation, Client client, Class<? extends Throwable> causeType) {
-        var exception = assertThrows(
-                ConnectionStalledException.class, () -> operation.call().accept(client));
+        var exception = Operations.assertFailsAfterSending(ConnectionStalledException.class, operation, client);
 
         assertEquals(
                 "failed to " + operation.action() + ", nothing arrived from the server for 300 milliseconds",

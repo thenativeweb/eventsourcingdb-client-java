@@ -77,7 +77,7 @@ class CloseTest {
             var thrown =
                     closeAfterRequest(server, client, () -> operation.call().accept(client));
 
-            assertInstanceOf(CancellationException.class, thrown);
+            Operations.assertFailedAfterSending(CancellationException.class, operation, thrown);
         }
     }
 
@@ -94,7 +94,8 @@ class CloseTest {
 
             var thrown = closeAfterRequest(server, client, () -> client.writeEvents(List.of()));
 
-            assertInstanceOf(CancellationException.class, thrown);
+            var outcomeUnknown = assertInstanceOf(OutcomeUnknownException.class, thrown);
+            assertInstanceOf(CancellationException.class, outcomeUnknown.getCause());
         }
     }
 

@@ -1,7 +1,6 @@
 package io.thenativeweb.eventsourcingdb;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.thenativeweb.eventsourcingdb.Operations.Operation;
 import java.util.List;
@@ -19,8 +18,7 @@ class InvalidServerHeaderExceptionTest {
         try (var server = FakeServer.start((exchange, fakeServer) -> exchange.sendResponseHeaders(200, -1))) {
             var client = new Client(server.url(), "secret");
 
-            var exception = assertThrows(
-                    InvalidServerHeaderException.class, () -> operation.call().accept(client));
+            var exception = Operations.assertFailsAfterSending(InvalidServerHeaderException.class, operation, client);
 
             assertEquals("server must be EventSourcingDB", exception.getMessage());
         }
@@ -35,8 +33,7 @@ class InvalidServerHeaderExceptionTest {
         })) {
             var client = new Client(server.url(), "secret");
 
-            assertThrows(
-                    InvalidServerHeaderException.class, () -> operation.call().accept(client));
+            Operations.assertFailsAfterSending(InvalidServerHeaderException.class, operation, client);
         }
     }
 }

@@ -37,8 +37,7 @@ class DbApiExceptionTest {
         try (var server = FakeServer.respondingWith(500, "  something went wrong\n")) {
             var client = new Client(server.url(), "secret");
 
-            var exception =
-                    assertThrows(DbApiException.class, () -> operation.call().accept(client));
+            var exception = Operations.assertFailsAfterSending(DbApiException.class, operation, client);
 
             assertEquals(
                     "failed to " + operation.action()

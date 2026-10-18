@@ -87,10 +87,9 @@ class CancellationTest {
 
             var outcome = interruptAfterRequest(server, () -> operation.call().accept(client));
 
-            assertInstanceOf(CancellationException.class, outcome.thrown());
-            assertEquals(
-                    "failed to " + operation.action() + ", the request was canceled",
-                    outcome.thrown().getMessage());
+            var cancellation =
+                    Operations.assertFailedAfterSending(CancellationException.class, operation, outcome.thrown());
+            assertEquals("failed to " + operation.action() + ", the request was canceled", cancellation.getMessage());
             assertTrue(outcome.wasInterrupted());
         }
     }
@@ -157,7 +156,8 @@ class CancellationTest {
 
             var outcome = interruptAfterRequest(server, () -> client.writeEvents(List.of()));
 
-            assertInstanceOf(CancellationException.class, outcome.thrown());
+            var outcomeUnknown = assertInstanceOf(OutcomeUnknownException.class, outcome.thrown());
+            assertInstanceOf(CancellationException.class, outcomeUnknown.getCause());
             assertTrue(outcome.wasInterrupted());
         }
     }

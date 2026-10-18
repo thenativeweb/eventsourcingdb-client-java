@@ -11,6 +11,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.function.UnaryOperator;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
@@ -139,14 +141,16 @@ public final class Client implements AutoCloseable {
     /**
      * Writes the given events, provided that all preconditions hold. The events are written all or nothing.
      *
-     * <p>If the thread is interrupted after the request was sent, the server may have written the events nevertheless,
-     * so the {@link java.util.concurrent.CancellationException} does not tell whether they were written.
+     * <p>If writing fails after the request was sent, e.g. because the connection stalls, or because the thread is
+     * interrupted, the server may have written the events nevertheless, so writing ends with an
+     * {@link OutcomeUnknownException}, whose cause tells what failed.
      *
      * @param events the events to write
      * @param preconditions the preconditions that must hold, e.g. an {@link IsSubjectPristinePrecondition}
      * @return the written events, including the fields the server adds, such as their IDs
      * @throws DbApiException with the code {@link ErrorCode#PRECONDITION_VIOLATED} if a precondition does not hold, or
      *     {@link ErrorCode#EVENT_SCHEMA_VIOLATED} if an event does not match the schema of its type
+     * @throws OutcomeUnknownException if writing failed in a way that leaves open whether the events were written
      */
     public List<Event> writeEvents(List<EventCandidate> events, List<Precondition> preconditions) {
         var body = Json.MAPPER.createObjectNode();
@@ -174,11 +178,13 @@ public final class Client implements AutoCloseable {
             }
         }
 
-        var response = request("write events", post("/api/v1/write-events", body), V1ErrorCodes.WRITE_EVENTS);
-
-        return RawJson.readArray(response, "data").stream()
-                .map(cloudEvent -> Event.from(cloudEvent.tree(), cloudEvent.raw(), dataMapper))
-                .toList();
+        return write(
+                "write events",
+                post("/api/v1/write-events", body),
+                V1ErrorCodes.WRITE_EVENTS,
+                response -> RawJson.readArray(response, "data").stream()
+                        .map(cloudEvent -> Event.from(cloudEvent.tree(), cloudEvent.raw(), dataMapper))
+                        .toList());
     }
 
     private static Map<String, Object> toRequest(Precondition precondition) {
@@ -385,16 +391,19 @@ public final class Client implements AutoCloseable {
      * @param schema the JSON schema, e.g. as nested maps and lists
      * @throws DbApiException with the code {@link ErrorCode#EVENT_SCHEMA_ALREADY_REGISTERED} if a schema is already
      *     registered for the event type
+     * @throws OutcomeUnknownException if registering failed in a way that leaves open whether the schema was
+     *     registered, e.g. because the connection stalled after the request was sent
      */
     public void registerEventSchema(String eventType, Map<String, ?> schema) {
         var body = Json.MAPPER.createObjectNode();
         body.put("eventType", eventType);
         body.set("schema", Json.MAPPER.valueToTree(schema));
 
-        request(
+        write(
                 "register event schema",
                 post("/api/v1/register-event-schema", body),
-                V1ErrorCodes.REGISTER_EVENT_SCHEMA);
+                V1ErrorCodes.REGISTER_EVENT_SCHEMA,
+                response -> response);
     }
 
     private HttpRequest post(String path, JsonNode body) {
@@ -408,11 +417,34 @@ public final class Client implements AutoCloseable {
         return HttpRequest.newBuilder(baseUrl.resolve(path)).header("Authorization", "Bearer " + apiToken);
     }
 
-    // Sends a request and returns the body of its response. The request is
-    // sent under the same lock under which close() marks the client as
-    // closed, so that close() either sees the request and ends it, or the
-    // request sees that the client is closed and is not sent at all.
     private String request(String action, HttpRequest request, CodeMapping codes) {
+        return request(action, request, codes, response -> response, failure -> failure);
+    }
+
+    // Sends a write, and interprets the body of its response. A write that
+    // fails after it was sent may have been stored nevertheless, unless the
+    // failure leaves no doubt that it was not.
+    private <T> T write(String action, HttpRequest request, CodeMapping codes, Function<String, T> interpretation) {
+        return request(
+                action,
+                request,
+                codes,
+                interpretation,
+                failure -> Outcomes.ofWrite(action, failure, Outcomes.V1_REFUSALS));
+    }
+
+    // Sends a request, and interprets the body of its response. Every failure
+    // once the request was sent, the interpretation included, goes through
+    // afterSending. The request is sent under the same lock under which
+    // close() marks the client as closed, so that close() either sees the
+    // request and ends it, or the request sees that the client is closed and
+    // is not sent at all.
+    private <T> T request(
+            String action,
+            HttpRequest request,
+            CodeMapping codes,
+            Function<String, T> interpretation,
+            UnaryOperator<RuntimeException> afterSending) {
         Http.throwIfInterrupted(action);
 
         CompletableFuture<HttpResponse<InputStream>> response;
@@ -426,14 +458,22 @@ public final class Client implements AutoCloseable {
         }
 
         try {
+            return interpretation.apply(receive(action, response, codes));
+        } catch (RuntimeException ex) {
+            throw afterSending.apply(ex);
+        } finally {
+            openRequests.remove(abortion);
+        }
+    }
+
+    private String receive(String action, CompletableFuture<HttpResponse<InputStream>> response, CodeMapping codes) {
+        try {
             return Http.readBody(action, Http.await(action, response, stallTimeout, codes), stallTimeout);
         } catch (RuntimeException ex) {
             if (isClosed) {
                 throw Http.cancellation(action, ex);
             }
             throw ex;
-        } finally {
-            openRequests.remove(abortion);
         }
     }
 

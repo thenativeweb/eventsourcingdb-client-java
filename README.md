@@ -219,7 +219,7 @@ try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
 }
 ```
 
-Writing then ends with a `CancellationException`. If the thread is interrupted before the request is sent, no events are written. If it is interrupted later, the server may have written them nevertheless, so the exception does not tell whether they were written.
+If the thread is interrupted before the request is sent, no events are written, and writing ends with a `CancellationException`. If it is interrupted later, the server may have written them nevertheless, so writing ends with an `OutcomeUnknownException`, whose cause is the `CancellationException`. For details, see [Knowing Whether a Write Was Stored](#knowing-whether-a-write-was-stored).
 
 ### Reading Events
 
@@ -710,6 +710,24 @@ If verifying an event fails, the client throws a `HashVerificationFailedExceptio
 If a request receives nothing from the server for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and the request ends with a `ConnectionStalledException`.
 
 If a request is aborted, because its thread is interrupted, because its stream is closed from somewhere else, or because the client is closed, it ends with a `CancellationException`.
+
+#### Knowing Whether a Write Was Stored
+
+The server never stops a write halfway, so a write whose answer is lost may have been stored nevertheless. If writing events or registering an event schema fails in a way that leaves open whether it was stored, the client throws an `OutcomeUnknownException`, whose cause tells what failed, e.g. a `ConnectionStalledException`, a broken connection, a `CancellationException` if the thread was interrupted after the request was sent, or a `DbApiException` with status `500`. Find out whether the write was stored, e.g. by reading the events of the subject, before you write it again:
+
+```java
+try {
+  client.writeEvents(
+    List.of(
+      // ...
+    )
+  );
+} catch (OutcomeUnknownException ex) {
+  // The events may have been written, so check before writing them again.
+}
+```
+
+A write that certainly was not stored throws the failure itself instead: an `EventSourcingDbException` if the client could not connect to the server at all, and a `DbApiException` if the server refused the write, e.g. because a precondition does not hold, or because the client sent too many requests.
 
 ### Using Testcontainers
 
