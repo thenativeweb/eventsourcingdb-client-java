@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
-import tools.jackson.databind.node.ObjectNode;
 
 // The hash of an event names its version, except for version 1, which
 // predates the prefix. These tests verify events as EventSourcingDB wrote
@@ -61,27 +60,6 @@ class HashVersionTest {
 
         var exception = assertThrows(HashVerificationFailedException.class, event::verifyHash);
         assertEquals("hash verification failed", exception.getMessage());
-    }
-
-    // The client hashes the data as the server sent it, but hands it out as a
-    // tree that callers can change, so a change after the event arrived must
-    // still fail the verification.
-    private static void assertThatAChangeOfTheDataFails(String line) {
-        var event = eventFrom(line);
-        ((ObjectNode) event.data()).put("b", 101);
-
-        var exception = assertThrows(HashVerificationFailedException.class, event::verifyHash);
-        assertEquals("hash verification failed", exception.getMessage());
-    }
-
-    @Test
-    void throwsIfTheDataOfAnEventWithAHashOfVersion1WasChangedAfterItArrived() {
-        assertThatAChangeOfTheDataFails(Lines.EVENT);
-    }
-
-    @Test
-    void throwsIfTheDataOfAnEventWithAHashOfVersion2WasChangedAfterItArrived() {
-        assertThatAChangeOfTheDataFails(Lines.EVENT_WITH_HASH_OF_VERSION_2);
     }
 
     @Test

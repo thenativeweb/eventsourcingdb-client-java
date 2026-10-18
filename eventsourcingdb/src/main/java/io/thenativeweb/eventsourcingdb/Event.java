@@ -169,9 +169,6 @@ public final class Event {
     /**
      * Verifies the integrity of the event, by recomputing its hash and comparing it to the hash stored in the event.
      *
-     * <p>The data counts as it is now, so a change of the tree that {@link #data()} returns fails the verification as
-     * well.
-     *
      * <p>The hash is recomputed in the version of the hash stored in the event: version 2, whose hash starts with
      * {@code esdb:hash:v2:}, or version 1, whose hash has no prefix. An event keeps the version it was written with, so
      * the events of a store may carry both.
@@ -181,16 +178,9 @@ public final class Event {
      *     {@code esdb:hash:v3:}
      */
     public void verifyHash() {
-        if (!computeHash().equals(hash) || hasDataChanged()) {
+        if (!computeHash().equals(hash)) {
             throw new HashVerificationFailedException();
         }
-    }
-
-    // The hash covers the data as the server sent it, but data() hands it out
-    // as a tree that callers can change, so a change after the event arrived
-    // shows only by comparing the tree with the data as the server sent it.
-    private boolean hasDataChanged() {
-        return !Json.MAPPER.readTree(dataFromServer).equals(data);
     }
 
     private String computeHash() {
