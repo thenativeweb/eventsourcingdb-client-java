@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.thenativeweb.eventsourcingdb.Operations.Operation;
+import java.io.IOException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -16,6 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -157,6 +159,49 @@ class CloseTest {
 
             assertEquals("client is closed", exception.getMessage());
             assertEquals(List.of(), server.requests());
+        }
+    }
+
+    // The headers of the response have arrived, but the stream does not have
+    // its body yet, when it is closed. It closes the body nevertheless, which
+    // ends the connection, so that an HTTP client of the caller's own keeps
+    // none open.
+    @Test
+    void closesTheBodyOfAStreamThatIsClosedBeforeItHasTheBody() throws InterruptedException {
+        var isConnectionClosed = new CountDownLatch(1);
+        var httpClient = new BodyHoldingHttpClient();
+
+        try (var server = FakeServer.start(ApiVersion.V1, (exchange, fakeServer) -> {
+            FakeServer.startStream(exchange);
+            try {
+                while (true) {
+                    FakeServer.writeLine(exchange, Lines.heartbeat(ApiVersion.V1));
+                    Thread.sleep(Duration.ofMillis(50));
+                }
+            } catch (IOException ex) {
+                isConnectionClosed.countDown();
+            }
+        })) {
+            var client = new Client(server.url(), "secret", new ClientOptions().withHttpClient(httpClient));
+            var events = client.observeEvents("/", new ObserveEventsOptions(true));
+            var thrown = new AtomicReference<Throwable>();
+            var consumer = Thread.ofPlatform().start(() -> {
+                try {
+                    events.forEach(event -> {});
+                } catch (RuntimeException ex) {
+                    thrown.set(ex);
+                }
+            });
+
+            httpClient.awaitBodyRequested();
+            events.close();
+            httpClient.releaseBody();
+            consumer.join();
+
+            assertInstanceOf(CancellationException.class, thrown.get());
+            assertTrue(isConnectionClosed.await(5, TimeUnit.SECONDS));
+        } finally {
+            httpClient.shutdownNow();
         }
     }
 

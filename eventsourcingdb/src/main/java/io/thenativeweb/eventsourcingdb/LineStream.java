@@ -175,14 +175,14 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     }
 
     // Ends the stream, whether it has not started yet, waits for the API to be
-    // chosen or for the server to answer, or reads a line.
+    // chosen or for the server to answer, or reads a line. It releases what
+    // the stream holds each time it is called, not only the first time: the
+    // stream may get hold of the body of its response after it was closed,
+    // e.g. when it was closed after the headers had arrived, but before it
+    // had the body. It then notices that it is closed with its next read,
+    // which ends it, and closes it again, and so the body, too.
     void close() {
-        synchronized (this) {
-            if (isClosed) {
-                return;
-            }
-            isClosed = true;
-        }
+        isClosed = true;
         requests.untrack(this);
 
         var pending = this.pending;
