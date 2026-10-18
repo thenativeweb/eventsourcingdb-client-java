@@ -4,6 +4,7 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Duration;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
@@ -44,6 +45,13 @@ final class StallGuard extends FilterInputStream {
                         .factory());
         executor.setRemoveOnCancelPolicy(true);
         return executor;
+    }
+
+    // Runs the action once the stall timeout has passed, unless the returned
+    // future is canceled before, on the thread of the guards, which mostly
+    // waits.
+    static ScheduledFuture<?> afterStallTimeout(Duration stallTimeout, Runnable action) {
+        return STALL_TIMERS.schedule(action, TimeUnit.NANOSECONDS.convert(stallTimeout), TimeUnit.NANOSECONDS);
     }
 
     @Override

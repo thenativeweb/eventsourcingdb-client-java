@@ -50,21 +50,28 @@ final class Http {
         } catch (TimeoutException ex) {
             abort(response);
 
-            // The stall timeout ends the wait before the JDK raises anything,
-            // so the stall carries the exception that the JDK uses for a
-            // response that does not arrive in time, which callers may check
-            // for, e.g. those who set timeouts on an HTTP client of their own.
-            var timeout =
-                    new HttpTimeoutException("nothing arrived from the server for " + Durations.describe(stallTimeout));
-            timeout.initCause(ex);
-            throw new ConnectionStalledException(action, stallTimeout, timeout);
+            throw new ConnectionStalledException(action, stallTimeout, timeout(stallTimeout, ex));
         }
+    }
+
+    // The stall timeout ends the wait before the JDK raises anything, so the
+    // stall carries the exception that the JDK uses for a response that does
+    // not arrive in time, which callers may check for, e.g. those who set
+    // timeouts on an HTTP client of their own.
+    static HttpTimeoutException timeout(Duration stallTimeout, @Nullable Throwable cause) {
+        var timeout =
+                new HttpTimeoutException("nothing arrived from the server for " + Durations.describe(stallTimeout));
+        timeout.initCause(cause);
+        return timeout;
+    }
+
+    static boolean isFromEventSourcingDb(HttpResponse<?> response) {
+        return response.headers().firstValue("Server").orElse("").startsWith("EventSourcingDB/");
     }
 
     private static HttpResponse<InputStream> check(
             String action, HttpResponse<InputStream> response, Duration stallTimeout, CodeMapping codes) {
-        var serverHeader = response.headers().firstValue("Server").orElse("");
-        if (!serverHeader.startsWith("EventSourcingDB/")) {
+        if (!isFromEventSourcingDb(response)) {
             close(response.body());
             throw new InvalidServerHeaderException();
         }
@@ -109,6 +116,12 @@ final class Http {
         }
 
         return new EventSourcingDbException("failed to " + action, ex);
+    }
+
+    // A stream that ends before it is complete was aborted by the server, e.g.
+    // because of a failure it could not report within the stream.
+    static EventSourcingDbException endedUnexpectedly(String action) {
+        return new EventSourcingDbException("failed to " + action + ", the stream ended unexpectedly");
     }
 
     static CancellationException cancellation(String action, @Nullable Throwable cause) {

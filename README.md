@@ -62,6 +62,12 @@ client.verifyApiToken();
 
 *Note that all exceptions the client throws are unchecked. For details, see [Handling Errors](#handling-errors).*
 
+### Talking to Servers With and Without the v2 API
+
+The client works with servers that offer the v2 API, and with servers that do not, such as EventSourcingDB 1.2.0. Creating a client sends no request. The first request of a client asks the server whether it offers the v2 API, and the client remembers the answer: from then on, it uses the v2 API if the server offers it, and the v1 API otherwise. If asking fails, e.g. because the server can not be reached, the first request fails, and the next one asks again.
+
+The v2 API reads with the HTTP method `QUERY` ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)), which carries a body, as `POST` does, but changes nothing. If a proxy, a load balancer, or a firewall sits in front of the database, it has to let `QUERY` through. The client does not fall back to `POST`.
+
 ### Configuring the HTTP Client
 
 By default, the client creates an HTTP client of its own. If you need to configure what it does not, e.g. a shorter connect timeout, a proxy, or TLS, create a `java.net.http.HttpClient` yourself, and hand it over using `ClientOptions`:
@@ -426,6 +432,8 @@ try (var events = client.observeEvents(
 }
 ```
 
+Observing does not end on its own. If the server ends it nevertheless, which it does only after a failure it can not report within the stream, the stream ends with an `EventSourcingDbException`, so that you can observe again.
+
 #### Observing From Subjects Recursively
 
 If you want to observe not only all the events of a subject, but also the events of all nested subjects, set the `recursive` option to `true`:
@@ -704,6 +712,8 @@ try {
 
 The server reports an error in one of two ways. If it accepts a request and the request fails nevertheless, e.g. because a precondition does not hold, the status is `200`, and the code names the error. If it refuses a request, e.g. because the API token is invalid, the status is the status code it answered with, e.g. `401`, and the code is empty.
 
+A server without the v2 API reports every error with a status code, e.g. a precondition that does not hold with `409`. For those errors that clearly match an error of the v2 API, the client sets the code of the v2 API nevertheless, so that you can handle them alike, whichever API the server offers.
+
 If the server refuses a request because the client sent too many, the status is `429`, and `retryAfter` tells how long the server asks you to wait before you send the request again, if it says so. The client does not repeat the request on its own:
 
 ```java
@@ -732,6 +742,8 @@ If verifying an event fails, the client throws a `HashVerificationFailedExceptio
 If a request receives nothing from the server for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and the request ends with a `ConnectionStalledException`.
 
 If a request is aborted, because its thread is interrupted, because its stream is closed from somewhere else, or because the client is closed, it ends with a `CancellationException`.
+
+If the server ends a stream before it is complete, e.g. because of a failure it can not report within the stream, the stream ends with an `EventSourcingDbException`. This includes observing events, which never ends on its own.
 
 #### Knowing Whether a Write Was Stored
 

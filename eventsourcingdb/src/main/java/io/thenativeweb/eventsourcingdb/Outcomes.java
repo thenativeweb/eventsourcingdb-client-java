@@ -2,6 +2,7 @@ package io.thenativeweb.eventsourcingdb;
 
 import java.net.ConnectException;
 import java.net.http.HttpConnectTimeoutException;
+import java.util.Set;
 import java.util.function.Predicate;
 import javax.net.ssl.SSLHandshakeException;
 import org.jspecify.annotations.Nullable;
@@ -23,6 +24,20 @@ final class Outcomes {
     static final Predicate<DbApiException> V1_REFUSALS = exception -> {
         var status = exception.status();
         return (status >= 400 && status < 500) || status == 503 || status == 507;
+    };
+
+    // The v2 API refuses a write it accepted with an error in its answer,
+    // except for store-failed, which reports that storing it failed halfway.
+    // It refuses a write it did not accept with a status code: 400 for a body
+    // of the wrong shape, 401 for an invalid API token, 408 for a body that
+    // did not arrive in time, 413 for a body that is too large, 429 for too
+    // many requests, and 503 for a server that is shutting down.
+    static final Predicate<DbApiException> V2_REFUSALS = exception -> {
+        if (exception.status() == 200) {
+            return !exception.code().equals(ErrorCode.STORE_FAILED);
+        }
+
+        return Set.of(400, 401, 408, 413, 429, 503).contains(exception.status());
     };
 
     private Outcomes() {}

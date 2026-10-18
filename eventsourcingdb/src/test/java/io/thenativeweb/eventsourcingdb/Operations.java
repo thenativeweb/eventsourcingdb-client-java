@@ -4,12 +4,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Stream;
+import org.junit.jupiter.params.provider.Arguments;
 
 // Operations lists every request the client can make, so that tests can check
 // a behavior that all of them share.
@@ -81,6 +83,14 @@ final class Operations {
 
     static List<Operation> writes() {
         return all().stream().filter(Operation::isWrite).toList();
+    }
+
+    // Pairs each operation with each API, so that a test runs every operation
+    // against a server with each API.
+    static List<Arguments> onEveryApi(List<Operation> operations) {
+        return Arrays.stream(ApiVersion.values())
+                .flatMap(api -> operations.stream().map(operation -> Arguments.of(api, operation)))
+                .toList();
     }
 
     // Asserts that the operation fails with the given type of exception, for

@@ -84,7 +84,7 @@ class V1ErrorCodesTest {
     }
 
     private static void assertCode(Operation operation, int status, String description, String code) {
-        try (var server = FakeServer.respondingWith(status, description + "\n")) {
+        try (var server = FakeServer.respondingWith(ApiVersion.V1, status, description + "\n")) {
             var client = new Client(server.url(), "secret");
 
             var exception =

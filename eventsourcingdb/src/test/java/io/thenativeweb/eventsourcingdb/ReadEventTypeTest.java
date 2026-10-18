@@ -40,7 +40,16 @@ class ReadEventTypeTest {
     void failsIfTheEventTypeIsMalformed() {
         var exception = assertThrows(DbApiException.class, () -> client.readEventType("io.eventsourcingdb.test."));
 
-        assertEquals(400, exception.status());
+        // The v1 API refuses the request with a status code. The v2 API
+        // accepts a request of the right shape, and reports a value that is
+        // malformed in its answer.
+        if (Database.offersV2Api(container)) {
+            assertEquals(200, exception.status());
+            assertEquals(ErrorCode.EVENT_TYPE_MALFORMED, exception.code());
+        } else {
+            assertEquals(400, exception.status());
+            assertEquals("", exception.code());
+        }
         assertFalse(exception.description().isEmpty());
     }
 

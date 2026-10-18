@@ -14,9 +14,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 // Java has no context like Go, so a caller aborts a request by interrupting
@@ -31,12 +32,12 @@ import org.junit.jupiter.params.provider.MethodSource;
 // WriteEventsTest, which this timeout does not cover.
 @Timeout(10)
 class CancellationTest {
-    static List<Operation> all() {
-        return Operations.all();
+    static List<Arguments> all() {
+        return Operations.onEveryApi(Operations.all());
     }
 
-    static List<Operation> streams() {
-        return Operations.streams();
+    static List<Arguments> streams() {
+        return Operations.onEveryApi(Operations.streams());
     }
 
     private record Outcome(Throwable thrown, boolean wasInterrupted) {}
@@ -81,8 +82,9 @@ class CancellationTest {
 
     @ParameterizedTest
     @MethodSource("all")
-    void anInterruptEndsARequestTheServerDoesNotAnswer(Operation operation) throws InterruptedException {
-        try (var server = FakeServer.start((exchange, fakeServer) -> fakeServer.hang())) {
+    void anInterruptEndsARequestTheServerDoesNotAnswer(ApiVersion api, Operation operation)
+            throws InterruptedException {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> fakeServer.hang())) {
             var client = new Client(server.url(), "secret");
 
             var outcome = interruptAfterRequest(server, () -> operation.call().accept(client));
@@ -96,8 +98,8 @@ class CancellationTest {
 
     @ParameterizedTest
     @MethodSource("all")
-    void anInterruptedThreadDoesNotSendTheRequest(Operation operation) {
-        try (var server = FakeServer.respondingWith(200, "")) {
+    void anInterruptedThreadDoesNotSendTheRequest(ApiVersion api, Operation operation) {
+        try (var server = FakeServer.respondingWith(api, 200, "")) {
             var client = new Client(server.url(), "secret");
 
             Thread.currentThread().interrupt();
@@ -107,14 +109,14 @@ class CancellationTest {
                 assertTrue(Thread.interrupted());
             }
 
-            assertEquals(0, server.requestCount());
+            assertEquals(List.of(), server.requests());
         }
     }
 
     @ParameterizedTest
     @MethodSource("streams")
-    void aCloseEndsAStreamWhoseRequestTheServerDoesNotAnswer(Operation operation) {
-        try (var server = FakeServer.start((exchange, fakeServer) -> fakeServer.hang());
+    void aCloseEndsAStreamWhoseRequestTheServerDoesNotAnswer(ApiVersion api, Operation operation) {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> fakeServer.hang());
                 var items = operation.open().apply(new Client(server.url(), "secret"));
                 var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             Runnable close = items::close;
@@ -131,21 +133,22 @@ class CancellationTest {
 
     @ParameterizedTest
     @MethodSource("streams")
-    void aStreamThatIsClosedBeforeItStartsDoesNotSendTheRequest(Operation operation) {
-        try (var server = FakeServer.respondingWith(200, "")) {
+    void aStreamThatIsClosedBeforeItStartsDoesNotSendTheRequest(ApiVersion api, Operation operation) {
+        try (var server = FakeServer.respondingWith(api, 200, "")) {
             var items = operation.open().apply(new Client(server.url(), "secret"));
             var iterator = items.iterator();
 
             items.close();
 
             assertThrows(CancellationException.class, iterator::hasNext);
-            assertEquals(0, server.requestCount());
+            assertEquals(List.of(), server.requests());
         }
     }
 
-    @Test
-    void anInterruptEndsAWriteWhoseResponseStopsInTheMiddle() throws InterruptedException {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void anInterruptEndsAWriteWhoseResponseStopsInTheMiddle(ApiVersion api) throws InterruptedException {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
             exchange.getResponseHeaders().set("Server", FakeServer.SERVER_HEADER);
             exchange.sendResponseHeaders(200, 1000);
             exchange.getResponseBody().write("[".getBytes());
@@ -162,19 +165,20 @@ class CancellationTest {
         }
     }
 
-    private static FakeServer streamingOneSubjectAndHanging() {
-        return FakeServer.start((exchange, fakeServer) -> {
+    private static FakeServer streamingOneSubjectAndHanging(ApiVersion api) {
+        return FakeServer.start(api, (exchange, fakeServer) -> {
             FakeServer.startStream(exchange);
-            FakeServer.writeLine(exchange, Lines.SUBJECT);
+            FakeServer.writeLine(exchange, Lines.subject(api));
             fakeServer.hang();
         });
     }
 
     // The stream is closed once the caller has its first subject, rather than
     // after a fixed time, which a slow machine may need to deliver it.
-    @Test
-    void aCloseEndsAStreamThatStopsInTheMiddle() {
-        try (var server = streamingOneSubjectAndHanging();
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void aCloseEndsAStreamThatStopsInTheMiddle(ApiVersion api) {
+        try (var server = streamingOneSubjectAndHanging(api);
                 var subjects = new Client(server.url(), "secret").readSubjects("/", new ReadSubjectsOptions(true));
                 var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var subjectsRead = new ArrayList<String>();
@@ -199,9 +203,10 @@ class CancellationTest {
 
     // The thread is interrupted once the caller has its first subject, rather
     // than after a fixed time, which a slow machine may need to deliver it.
-    @Test
-    void anInterruptEndsAStreamThatStopsInTheMiddle() throws InterruptedException {
-        try (var server = streamingOneSubjectAndHanging()) {
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void anInterruptEndsAStreamThatStopsInTheMiddle(ApiVersion api) throws InterruptedException {
+        try (var server = streamingOneSubjectAndHanging(api)) {
             var client = new Client(server.url(), "secret");
             var subjectsRead = new ArrayList<String>();
             var hasSubject = new CountDownLatch(1);

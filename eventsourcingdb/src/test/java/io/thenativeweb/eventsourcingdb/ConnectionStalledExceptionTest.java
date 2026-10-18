@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Executors;
@@ -20,6 +21,8 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 // A request fails once nothing arrives from the server for the stall timeout,
@@ -30,44 +33,50 @@ class ConnectionStalledExceptionTest {
     private static final Duration STALL_TIMEOUT = Duration.ofMillis(300);
 
     // A stream along with a line that holds one of its items.
-    record ItemStream(String name, Function<Client, Stream<?>> open, String item) {
+    record ItemStream(String name, Function<Client, Stream<?>> open, Function<ApiVersion, String> item) {
         @Override
         public String toString() {
             return name;
         }
     }
 
-    static List<ItemStream> itemStreams() {
-        return List.of(
-                new ItemStream(
-                        "read events", client -> client.readEvents("/", new ReadEventsOptions(true)), Lines.EVENT),
-                new ItemStream(
-                        "observe events",
-                        client -> client.observeEvents("/", new ObserveEventsOptions(true)),
-                        Lines.EVENT),
-                new ItemStream(
-                        "run EventQL query",
-                        client -> client.runEventQlQuery("FROM e IN events PROJECT INTO e"),
-                        Lines.ROW),
-                new ItemStream(
-                        "read subjects",
-                        client -> client.readSubjects("/", new ReadSubjectsOptions(true)),
-                        Lines.SUBJECT),
-                new ItemStream("read event types", Client::readEventTypes, Lines.EVENT_TYPE));
-    }
-
-    static List<Operation> all() {
-        return Operations.all();
-    }
-
-    static List<Operation> requests() {
-        return Operations.all().stream()
-                .filter(operation -> !operation.isStream())
+    static List<Arguments> itemStreams() {
+        return Arrays.stream(ApiVersion.values())
+                .flatMap(api -> itemStreamsOf().stream().map(stream -> Arguments.of(api, stream)))
                 .toList();
     }
 
-    static List<Operation> streams() {
-        return Operations.streams();
+    private static List<ItemStream> itemStreamsOf() {
+        return List.of(
+                new ItemStream(
+                        "read events", client -> client.readEvents("/", new ReadEventsOptions(true)), Lines::event),
+                new ItemStream(
+                        "observe events",
+                        client -> client.observeEvents("/", new ObserveEventsOptions(true)),
+                        Lines::event),
+                new ItemStream(
+                        "run EventQL query",
+                        client -> client.runEventQlQuery("FROM e IN events PROJECT INTO e"),
+                        Lines::row),
+                new ItemStream(
+                        "read subjects",
+                        client -> client.readSubjects("/", new ReadSubjectsOptions(true)),
+                        Lines::subject),
+                new ItemStream("read event types", Client::readEventTypes, Lines::eventType));
+    }
+
+    static List<Arguments> all() {
+        return Operations.onEveryApi(Operations.all());
+    }
+
+    static List<Arguments> requests() {
+        return Operations.onEveryApi(Operations.all().stream()
+                .filter(operation -> !operation.isStream())
+                .toList());
+    }
+
+    static List<Arguments> streams() {
+        return Operations.onEveryApi(Operations.streams());
     }
 
     private static Client clientWith(FakeServer server) {
@@ -100,16 +109,16 @@ class ConnectionStalledExceptionTest {
 
     @ParameterizedTest
     @MethodSource("all")
-    void endsARequestWhoseResponseDoesNotArrive(Operation operation) {
-        try (var server = FakeServer.start((exchange, fakeServer) -> fakeServer.hang())) {
+    void endsARequestWhoseResponseDoesNotArrive(ApiVersion api, Operation operation) {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> fakeServer.hang())) {
             assertStalled(operation, clientWith(server), HttpTimeoutException.class);
         }
     }
 
     @ParameterizedTest
     @MethodSource("requests")
-    void endsARequestWhoseResponseStopsInTheMiddle(Operation operation) {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+    void endsARequestWhoseResponseStopsInTheMiddle(ApiVersion api, Operation operation) {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
             exchange.getResponseHeaders().set("Server", FakeServer.SERVER_HEADER);
             exchange.sendResponseHeaders(200, 1000);
             exchange.getResponseBody().write("[".getBytes(UTF_8));
@@ -122,19 +131,20 @@ class ConnectionStalledExceptionTest {
 
     @ParameterizedTest
     @MethodSource("streams")
-    void endsAStreamThatStopsAfterAHeartbeat(Operation operation) {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+    void endsAStreamThatStopsAfterAHeartbeat(ApiVersion api, Operation operation) {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
             FakeServer.startStream(exchange);
-            FakeServer.writeLine(exchange, Lines.HEARTBEAT);
+            FakeServer.writeLine(exchange, Lines.heartbeat(api));
             fakeServer.hang();
         })) {
             assertStalled(operation, clientWith(server), IOException.class);
         }
     }
 
-    @Test
-    void endsAnErrorWhoseReasonStopsInTheMiddle() {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void endsAnErrorWhoseDescriptionStopsInTheMiddle(ApiVersion api) {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
             exchange.getResponseHeaders().set("Server", FakeServer.SERVER_HEADER);
             exchange.sendResponseHeaders(500, 1000);
             exchange.getResponseBody().write("something".getBytes(UTF_8));
@@ -145,11 +155,13 @@ class ConnectionStalledExceptionTest {
         }
     }
 
-    @Test
-    void keepsARequestAliveWhileItsResponseArrives() {
-        var response = "{\"type\":\"io.eventsourcingdb.api.ping-received\"}";
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void keepsARequestAliveWhileItsResponseArrives(ApiVersion api) {
+        var response =
+                api == ApiVersion.V1 ? "{\"type\":\"io.eventsourcingdb.api.ping-received\"}" : ApiVersion.PING_RECEIVED;
 
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
             exchange.getResponseHeaders().set("Server", FakeServer.SERVER_HEADER);
             exchange.sendResponseHeaders(200, response.getBytes(UTF_8).length);
             writeInPieces(exchange.getResponseBody(), response);
@@ -158,11 +170,12 @@ class ConnectionStalledExceptionTest {
         }
     }
 
-    @Test
-    void keepsAStreamAliveWhileALineArrives() {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void keepsAStreamAliveWhileALineArrives(ApiVersion api) {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
                     FakeServer.startStream(exchange);
-                    writeInPieces(exchange.getResponseBody(), Lines.SUBJECT + "\n");
+                    writeInPieces(exchange.getResponseBody(), Lines.subject(api) + "\n" + api.end() + "\n");
                 });
                 var subjects = clientWith(server).readSubjects("/", new ReadSubjectsOptions(true))) {
             assertEquals(List.of("/"), subjects.toList());
@@ -171,14 +184,14 @@ class ConnectionStalledExceptionTest {
 
     @ParameterizedTest
     @MethodSource("itemStreams")
-    void keepsAStreamAliveWhileHeartbeatsArrive(ItemStream stream) {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+    void keepsAStreamAliveWhileHeartbeatsArrive(ApiVersion api, ItemStream stream) {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
                     FakeServer.startStream(exchange);
                     for (var i = 0; i < 6; i++) {
-                        FakeServer.writeLine(exchange, Lines.HEARTBEAT);
+                        FakeServer.writeLine(exchange, Lines.heartbeat(api));
                         Thread.sleep(STALL_TIMEOUT.dividedBy(3));
                     }
-                    FakeServer.writeLine(exchange, stream.item());
+                    FakeServer.writeLine(exchange, stream.item().apply(api));
                     fakeServer.hang();
                 });
                 var items = stream.open().apply(clientWith(server))) {
@@ -190,12 +203,12 @@ class ConnectionStalledExceptionTest {
     // so the client has to read again after the caller's time.
     @ParameterizedTest
     @MethodSource("itemStreams")
-    void doesNotCountTheTimeTheCallerSpendsOnAnItem(ItemStream stream) {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+    void doesNotCountTheTimeTheCallerSpendsOnAnItem(ApiVersion api, ItemStream stream) {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
                     FakeServer.startStream(exchange);
-                    FakeServer.writeLine(exchange, stream.item());
+                    FakeServer.writeLine(exchange, stream.item().apply(api));
                     Thread.sleep(STALL_TIMEOUT.dividedBy(3));
-                    FakeServer.writeLine(exchange, stream.item());
+                    FakeServer.writeLine(exchange, stream.item().apply(api));
                     fakeServer.hang();
                 });
                 var items = stream.open().apply(clientWith(server))) {
@@ -209,10 +222,10 @@ class ConnectionStalledExceptionTest {
 
     @ParameterizedTest
     @MethodSource("itemStreams")
-    void endsAStreamThatIsClosedWithACancellationRatherThanAStall(ItemStream stream) {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+    void endsAStreamThatIsClosedWithACancellationRatherThanAStall(ApiVersion api, ItemStream stream) {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
                     FakeServer.startStream(exchange);
-                    FakeServer.writeLine(exchange, Lines.HEARTBEAT);
+                    FakeServer.writeLine(exchange, Lines.heartbeat(api));
                     fakeServer.hang();
                 });
                 var items = stream.open()

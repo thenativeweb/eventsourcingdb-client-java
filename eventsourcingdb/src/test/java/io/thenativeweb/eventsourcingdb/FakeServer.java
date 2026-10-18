@@ -14,24 +14,31 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.jspecify.annotations.Nullable;
 
 // FakeServer stands in for EventSourcingDB where a real instance can not
 // produce the behavior under test, e.g. a missing Server header, a broken
-// response, or a stream that stalls.
+// response, or a stream that stalls. It offers the v1 or the v2 API, and
+// answers the probe of the client accordingly, so that its handler sees the
+// requests of the operations only.
 final class FakeServer implements AutoCloseable {
     static final String SERVER_HEADER = "EventSourcingDB/fake";
+
+    static final String PROBE_PATH = "/api/v2/system/ping";
 
     private final HttpServer server;
     private final CountDownLatch released = new CountDownLatch(1);
     private final CountDownLatch requested = new CountDownLatch(1);
     private final AtomicInteger requestCount = new AtomicInteger();
+    private final AtomicBoolean hasBeenProbed = new AtomicBoolean();
     private final List<Request> requests = new CopyOnWriteArrayList<>();
 
     // A request as the server received it.
     record Request(String method, String path, String body) {}
 
-    private FakeServer(Handler handler) {
+    private FakeServer(@Nullable ApiVersion api, Handler handler) {
         try {
             server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         } catch (IOException ex) {
@@ -39,12 +46,21 @@ final class FakeServer implements AutoCloseable {
         }
 
         HttpHandler httpHandler = exchange -> {
-            requestCount.incrementAndGet();
-            requested.countDown();
             try (exchange) {
                 var body = new String(exchange.getRequestBody().readAllBytes(), UTF_8);
-                requests.add(new Request(
-                        exchange.getRequestMethod(), exchange.getRequestURI().getPath(), body));
+                var request = new Request(
+                        exchange.getRequestMethod(), exchange.getRequestURI().getPath(), body);
+                requests.add(request);
+
+                // The probe comes first. A ping to the v2 API afterwards is
+                // a request of an operation.
+                if (api != null && isProbe(api, request)) {
+                    api.answerProbe(exchange);
+                    return;
+                }
+
+                requestCount.incrementAndGet();
+                requested.countDown();
                 handler.handle(exchange, this);
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
@@ -59,12 +75,38 @@ final class FakeServer implements AutoCloseable {
         server.start();
     }
 
-    static FakeServer start(Handler handler) {
-        return new FakeServer(handler);
+    private boolean isProbe(ApiVersion api, Request request) {
+        if (!request.path().equals(PROBE_PATH)) {
+            return false;
+        }
+
+        return api == ApiVersion.V1 || hasBeenProbed.compareAndSet(false, true);
     }
 
-    static FakeServer respondingWith(int statusCode, String body) {
-        return start((exchange, server) -> respond(exchange, statusCode, body));
+    // Starts a server that offers the given API.
+    static FakeServer start(ApiVersion api, Handler handler) {
+        return new FakeServer(api, handler);
+    }
+
+    // Starts a server that leaves the probe to the handler, too.
+    static FakeServer start(Handler handler) {
+        return new FakeServer(null, handler);
+    }
+
+    static FakeServer respondingWith(ApiVersion api, int statusCode, String body) {
+        return start(api, (exchange, server) -> respond(exchange, statusCode, body));
+    }
+
+    // Starts a server that answers with a stream of the given items, which
+    // ends as a stream that is complete.
+    static FakeServer streaming(ApiVersion api, String... items) {
+        return start(api, (exchange, server) -> {
+            startStream(exchange);
+            for (var item : items) {
+                writeLine(exchange, item);
+            }
+            writeLine(exchange, api.end());
+        });
     }
 
     static URI unusedUrl() {
@@ -101,6 +143,8 @@ final class FakeServer implements AutoCloseable {
         released.await();
     }
 
+    // Waits for the first request of an operation, i.e. one that is not the
+    // probe.
     void awaitRequest() throws InterruptedException {
         requested.await();
     }
@@ -109,6 +153,7 @@ final class FakeServer implements AutoCloseable {
         return URI.create("http://localhost:" + server.getAddress().getPort());
     }
 
+    // The number of requests of operations, i.e. without the probe.
     int requestCount() {
         return requestCount.get();
     }

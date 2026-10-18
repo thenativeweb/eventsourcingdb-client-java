@@ -6,72 +6,52 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.net.http.HttpResponse;
-import java.time.Duration;
-import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
+import java.util.function.Function;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 import org.jspecify.annotations.Nullable;
-import tools.jackson.core.JsonToken;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.node.MissingNode;
 
 // LineStream hands out the items of an NDJSON stream as the caller consumes
-// them. It sends the request only once the caller starts to consume, and it
-// ends the stream with an exception if it is closed from somewhere else, or
-// if nothing arrives from the server for the stall timeout.
+// them. It sends its request only once the caller starts to consume, which is
+// when it learns which API the server offers, and so which request to send.
+// It ends the stream with an exception if it is closed from somewhere else,
+// if nothing arrives from the server for the stall timeout, or if the server
+// ends the stream before it is complete.
 final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     private final String action;
-    private final Supplier<CompletableFuture<HttpResponse<InputStream>>> request;
-    private final String itemType;
-    private final Parser<T> parser;
-    private final Duration stallTimeout;
-    private final CodeMapping codes;
-    private final Set<LineStream<?>> openStreams;
+    private final Requests requests;
+    private final TransportChooser transports;
+    private final Function<Transport, StreamSpec<T>> specs;
 
     private volatile boolean isClosed;
-    private volatile @Nullable CompletableFuture<HttpResponse<InputStream>> response;
+    private volatile @Nullable CompletableFuture<?> pending;
     private volatile @Nullable InputStream body;
-    private @Nullable BufferedReader reader;
+    private @Nullable Opened<T> opened;
+
+    // A stream whose request was answered: what the stream reads, and what
+    // its lines are.
+    private record Opened<T>(BufferedReader reader, StreamSpec<T> spec) {}
 
     private LineStream(
-            String action,
-            Supplier<CompletableFuture<HttpResponse<InputStream>>> request,
-            String itemType,
-            Parser<T> parser,
-            Duration stallTimeout,
-            CodeMapping codes,
-            Set<LineStream<?>> openStreams) {
+            String action, Requests requests, TransportChooser transports, Function<Transport, StreamSpec<T>> specs) {
         super(Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL);
         this.action = action;
-        this.request = request;
-        this.itemType = itemType;
-        this.parser = parser;
-        this.stallTimeout = stallTimeout;
-        this.codes = codes;
-        this.openStreams = openStreams;
+        this.requests = requests;
+        this.transports = transports;
+        this.specs = specs;
     }
 
-    // A stream that receives nothing for the stall timeout, not even a
-    // heartbeat, ends with a ConnectionStalledException.
-    // The stream adds itself to openStreams, and removes itself once it has
-    // ended, so that the client can end the streams that are still open when
-    // it is closed.
+    // Creates a stream that specs describes once the API is known. The
+    // stream is tracked by the client, so that closing the client closes it,
+    // and it stops being tracked once it has ended.
     static <T> Stream<T> of(
-            String action,
-            Supplier<CompletableFuture<HttpResponse<InputStream>>> request,
-            String itemType,
-            Parser<T> parser,
-            Duration stallTimeout,
-            CodeMapping codes,
-            Set<LineStream<?>> openStreams) {
-        var lineStream = new LineStream<>(action, request, itemType, parser, stallTimeout, codes, openStreams);
-        openStreams.add(lineStream);
+            String action, Requests requests, TransportChooser transports, Function<Transport, StreamSpec<T>> specs) {
+        var lineStream = requests.track(new LineStream<>(action, requests, transports, specs));
         return StreamSupport.stream(lineStream, false).onClose(lineStream::close);
     }
 
@@ -86,98 +66,93 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     }
 
     private boolean advance(Consumer<? super T> consumer) {
-        var reader = this.reader;
-        if (reader == null) {
-            reader = open();
+        var opened = this.opened;
+        if (opened == null) {
+            opened = open();
+            this.opened = opened;
         }
+        var reader = opened.reader();
+        var spec = opened.spec();
 
         while (true) {
             var line = readLine(reader);
             if (line == null) {
-                Http.close(reader);
-                openStreams.remove(this);
+                if (spec.ending() != StreamSpec.Ending.WITH_RESPONSE) {
+                    throw Http.endedUnexpectedly(action);
+                }
+
+                end(reader);
                 return false;
             }
             if (line.isBlank()) {
                 continue;
             }
 
-            var message = readMessage(line);
-            var type = message.type();
-            var payload = message.payload();
+            var item = spec.envelope().read(line);
+            var type = item.type();
 
             if (type.equals("heartbeat")) {
                 continue;
             }
-            if (type.equals(itemType)) {
-                consumer.accept(parser.parse(payload, message.rawData()));
+            if (type.equals(spec.itemType())) {
+                var parsed = spec.parser().parse(item.payload(), item.rawData());
+                if (!spec.isWanted().test(parsed)) {
+                    continue;
+                }
+
+                consumer.accept(parsed);
                 return true;
             }
             if (type.equals("error")) {
-                throw DbApiException.ofAnswer(
-                        action, "", payload.path("error").asString(), Json.MAPPER.createObjectNode());
+                throw spec.envelope().errorItem().toException(action, item.payload());
+            }
+            if (type.equals("end") && spec.ending() == StreamSpec.Ending.WITH_END_ITEM) {
+                end(reader);
+                return false;
             }
 
             throw new EventSourcingDbException("failed to handle unsupported line type: " + type);
         }
     }
 
-    // A line of the stream: its type, its payload, and the text of the data
-    // within its payload as the server wrote it, if there is any.
-    private record Message(
-            String type, JsonNode payload, @Nullable String rawData) {}
-
-    // Reads a line in a single pass, since that is what most of the time of
-    // reading a stream goes into.
-    private static Message readMessage(String line) {
-        try (var parser = Json.MAPPER.createParser(line)) {
-            var type = "";
-            JsonNode payload = MissingNode.getInstance();
-            String rawData = null;
-
-            if (parser.nextToken() == JsonToken.START_OBJECT) {
-                while (parser.nextToken() == JsonToken.PROPERTY_NAME) {
-                    var name = parser.currentName();
-                    parser.nextToken();
-
-                    var value = RawJson.readValue(parser, line, "data");
-                    if (name.equals("type")) {
-                        type = value.tree().asString();
-                    } else if (name.equals("payload")) {
-                        payload = value.tree();
-                        rawData = value.raw();
-                    }
-                }
-            }
-
-            return new Message(type, payload, rawData);
-        }
+    private void end(BufferedReader reader) {
+        Http.close(reader);
+        requests.untrack(this);
     }
 
-    private BufferedReader open() {
+    // Learns which API the server offers, and sends the request of the
+    // stream through it.
+    private Opened<T> open() {
         throwIfClosed();
         Http.throwIfInterrupted(action);
 
-        var response = request.get();
-        this.response = response;
+        var transport = transports.transport();
+        pending = transport;
 
+        StreamSpec<T> spec;
         InputStream body;
         try {
-            body = Http.await(action, response, stallTimeout, codes).body();
+            throwIfClosed();
+            spec = specs.apply(TransportChooser.await(action, transport));
+
+            var response = requests.sendForStream(spec.request());
+            pending = response;
+            body = Http.await(action, response, requests.stallTimeout(), spec.codes())
+                    .body();
         } catch (RuntimeException ex) {
             throwIfClosed();
             throw ex;
         }
         this.body = body;
 
+        var stallTimeout = requests.stallTimeout();
         var reader = new BufferedReader(new InputStreamReader(
                 new StallGuard(body, stallTimeout, ex -> new ConnectionStalledException(action, stallTimeout, ex)),
                 UTF_8));
-        this.reader = reader;
-        return reader;
+        return new Opened<>(reader, spec);
     }
 
-    // Returns null once the stream has ended.
+    // Returns null once the response has ended.
     private @Nullable String readLine(BufferedReader reader) {
         throwIfClosed();
 
@@ -199,8 +174,8 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
         }
     }
 
-    // Ends the stream, whether it has not started yet, waits for the server,
-    // or reads a line.
+    // Ends the stream, whether it has not started yet, waits for the API to be
+    // chosen or for the server to answer, or reads a line.
     void close() {
         synchronized (this) {
             if (isClosed) {
@@ -208,11 +183,11 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             }
             isClosed = true;
         }
-        openStreams.remove(this);
+        requests.untrack(this);
 
-        var response = this.response;
-        if (response != null) {
-            response.cancel(true);
+        var pending = this.pending;
+        if (pending != null) {
+            pending.cancel(true);
         }
 
         var body = this.body;

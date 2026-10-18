@@ -12,20 +12,21 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 class DbApiExceptionTest {
-    static List<Operation> all() {
-        return Operations.all();
+    static List<Arguments> all() {
+        return Operations.onEveryApi(Operations.all());
     }
 
     static List<Operation> authenticated() {
         return Operations.authenticated();
     }
 
-    private static FakeServer respondingWith(int status, String retryAfter) {
-        return FakeServer.start((exchange, fakeServer) -> {
+    private static FakeServer respondingWith(ApiVersion api, int status, String retryAfter) {
+        return FakeServer.start(api, (exchange, fakeServer) -> {
             exchange.getResponseHeaders().set("Retry-After", retryAfter);
             FakeServer.respond(exchange, status, "too many requests");
         });
@@ -33,8 +34,8 @@ class DbApiExceptionTest {
 
     @ParameterizedTest
     @MethodSource("all")
-    void everyRequestReportsAnUnexpectedStatusWithItsStatusAndDescription(Operation operation) {
-        try (var server = FakeServer.respondingWith(500, "  something went wrong\n")) {
+    void everyRequestReportsAnUnexpectedStatusWithItsStatusAndDescription(ApiVersion api, Operation operation) {
+        try (var server = FakeServer.respondingWith(api, 500, "  something went wrong\n")) {
             var client = new Client(server.url(), "secret");
 
             var exception = Operations.assertFailsAfterSending(DbApiException.class, operation, client);
@@ -71,7 +72,7 @@ class DbApiExceptionTest {
 
     @Test
     void leavesOutTheDescriptionIfTheServerGivesNone() {
-        try (var server = FakeServer.respondingWith(503, "")) {
+        try (var server = FakeServer.respondingWith(ApiVersion.V1, 503, "")) {
             var client = new Client(server.url(), "secret");
 
             var exception = assertThrows(DbApiException.class, client::ping);
@@ -83,7 +84,7 @@ class DbApiExceptionTest {
 
     @Test
     void cutsALongDescriptionShort() {
-        try (var server = FakeServer.respondingWith(500, "x".repeat(10_000))) {
+        try (var server = FakeServer.respondingWith(ApiVersion.V1, 500, "x".repeat(10_000))) {
             var client = new Client(server.url(), "secret");
 
             var exception = assertThrows(DbApiException.class, client::ping);
@@ -94,7 +95,7 @@ class DbApiExceptionTest {
 
     @Test
     void reportsIfTheDescriptionCannotBeRead() {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+        try (var server = FakeServer.start(ApiVersion.V1, (exchange, fakeServer) -> {
             exchange.getResponseHeaders().set("Server", FakeServer.SERVER_HEADER);
             exchange.sendResponseHeaders(500, 1000);
             exchange.getResponseBody().write("something".getBytes());
@@ -115,8 +116,8 @@ class DbApiExceptionTest {
 
     @ParameterizedTest
     @MethodSource("all")
-    void everyRequestReportsHowLongToWaitIfThereAreTooManyRequests(Operation operation) {
-        try (var server = respondingWith(429, "7")) {
+    void everyRequestReportsHowLongToWaitIfThereAreTooManyRequests(ApiVersion api, Operation operation) {
+        try (var server = respondingWith(api, 429, "7")) {
             var client = new Client(server.url(), "secret");
 
             var exception =
@@ -134,7 +135,7 @@ class DbApiExceptionTest {
     @ParameterizedTest
     @ValueSource(strings = {"", "soon", "-1", "1.5", "Wed, 21 Oct 2026 07:28:00 GMT"})
     void leavesOutHowLongToWaitIfItIsNoNumberOfSeconds(String retryAfter) {
-        try (var server = respondingWith(429, retryAfter)) {
+        try (var server = respondingWith(ApiVersion.V1, 429, retryAfter)) {
             var client = new Client(server.url(), "secret");
 
             var exception = assertThrows(DbApiException.class, client::ping);
@@ -145,7 +146,7 @@ class DbApiExceptionTest {
 
     @Test
     void leavesOutHowLongToWaitIfThereAreNotTooManyRequests() {
-        try (var server = respondingWith(503, "7")) {
+        try (var server = respondingWith(ApiVersion.V1, 503, "7")) {
             var client = new Client(server.url(), "secret");
 
             var exception = assertThrows(DbApiException.class, client::ping);
