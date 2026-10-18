@@ -19,7 +19,7 @@ import org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 class EventSourcingDbAutoConfigurationTest {
-    private static final Container container = new Container().withImageTag(ImageTag.fromDockerfile());
+    private static final Container container = new Container().withImageTag(ImageTag.get());
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(EventSourcingDbAutoConfiguration.class));

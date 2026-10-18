@@ -22,7 +22,7 @@ import tools.jackson.databind.json.JsonMapper;
 class ContainerTest {
     @Test
     void startsHandsOutAClientAndStops() {
-        var container = new Container().withImageTag(ImageTag.fromDockerfile());
+        var container = new Container().withImageTag(ImageTag.get());
         assertFalse(container.isRunning());
 
         container.start();
@@ -42,7 +42,7 @@ class ContainerTest {
     @Test
     void usesACustomApiTokenAndPort() {
         var container = new Container()
-                .withImageTag(ImageTag.fromDockerfile())
+                .withImageTag(ImageTag.get())
                 .withApiToken("my-token")
                 .withPort(4000);
 
@@ -62,7 +62,7 @@ class ContainerTest {
 
     @Test
     void signsEventsWithItsSigningKey() {
-        var container = new Container().withImageTag(ImageTag.fromDockerfile()).withSigningKey();
+        var container = new Container().withImageTag(ImageTag.get()).withSigningKey();
 
         container.start();
         try {
@@ -92,7 +92,7 @@ class ContainerTest {
 
     @Test
     void handsOutAClientWithTheGivenOptions() {
-        var container = new Container().withImageTag(ImageTag.fromDockerfile());
+        var container = new Container().withImageTag(ImageTag.get());
 
         container.start();
         try {
@@ -168,7 +168,7 @@ class ContainerTest {
     @Test
     void replacesAContainerWhoseDatabaseDoesNotBecomeReachable() {
         var containerIds = new ArrayList<String>();
-        var container = new Container().withImageTag(ImageTag.fromDockerfile());
+        var container = new Container().withImageTag(ImageTag.get());
 
         // Docker Desktop sometimes does not make the port of a container
         // reachable from the host. The container keeps running, but starting
@@ -195,7 +195,7 @@ class ContainerTest {
     void givesUpAfterThreeAttemptsAndSaysWhy() {
         var containerIds = new ArrayList<String>();
         var failures = new ArrayList<ContainerLaunchException>();
-        var container = new Container().withImageTag(ImageTag.fromDockerfile());
+        var container = new Container().withImageTag(ImageTag.get());
 
         container.starter = self -> {
             self.startOnce();
@@ -221,7 +221,7 @@ class ContainerTest {
         var containerIds = new ArrayList<String>();
 
         // Without an API token, EventSourcingDB exits right away.
-        var container = new Container().withImageTag(ImageTag.fromDockerfile()).withApiToken("");
+        var container = new Container().withImageTag(ImageTag.get()).withApiToken("");
         container.starter = self -> {
             try {
                 self.startOnce();

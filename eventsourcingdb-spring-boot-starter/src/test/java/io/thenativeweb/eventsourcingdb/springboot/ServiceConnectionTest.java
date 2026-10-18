@@ -25,7 +25,7 @@ class ServiceConnectionTest {
         @Bean
         @ServiceConnection
         Container eventSourcingDb() {
-            return new Container().withImageTag(ImageTag.fromDockerfile());
+            return new Container().withImageTag(ImageTag.get());
         }
     }
 

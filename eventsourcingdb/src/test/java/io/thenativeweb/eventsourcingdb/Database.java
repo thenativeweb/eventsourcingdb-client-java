@@ -14,7 +14,7 @@ final class Database {
     }
 
     private static Container start(Container container) {
-        container.withImageTag(ImageTag.fromDockerfile()).start();
+        container.withImageTag(ImageTag.get()).start();
         return container;
     }
 }
