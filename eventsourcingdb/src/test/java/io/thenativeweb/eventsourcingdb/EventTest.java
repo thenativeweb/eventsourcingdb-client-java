@@ -9,11 +9,14 @@ import io.thenativeweb.eventsourcingdb.testcontainers.Container;
 import java.security.InvalidKeyException;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
+import java.security.SignatureException;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.databind.node.ObjectNode;
 
 class EventTest {
@@ -70,6 +73,25 @@ class EventTest {
             assertDoesNotThrow(event::verifyHash);
         }
 
+        // Version 2 of the hash covers the trace context, which version 1 does
+        // not.
+        @Test
+        void verifiesTheHashOfAnEventWithATraceContext() {
+            container = Database.start();
+            var event = container
+                    .getClient()
+                    .writeEvents(List.of(new EventCandidate(
+                            "https://www.eventsourcingdb.io",
+                            "/test",
+                            "io.eventsourcingdb.test",
+                            new EventData(42),
+                            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+                            "vendor=value")))
+                    .getFirst();
+
+            assertDoesNotThrow(event::verifyHash);
+        }
+
         @Test
         void verifiesTheHashOfAnEventWhoseDataTheServerEscapes() {
             container = Database.start();
@@ -85,7 +107,7 @@ class EventTest {
             container = Database.start();
             var event = tamper(writeEvent(new EventData(42)), "hash", "0".repeat(64));
 
-            var exception = assertThrows(EventSourcingDbException.class, event::verifyHash);
+            var exception = assertThrows(HashVerificationFailedException.class, event::verifyHash);
             assertEquals("hash verification failed", exception.getMessage());
         }
     }
@@ -109,7 +131,7 @@ class EventTest {
             var event = tamper(writeEvent(new EventData(42)), "hash", "0".repeat(64));
 
             var exception = assertThrows(
-                    EventSourcingDbException.class, () -> event.verifySignature(container.getVerificationKey()));
+                    HashVerificationFailedException.class, () -> event.verifySignature(container.getVerificationKey()));
             assertEquals("hash verification failed", exception.getMessage());
         }
 
@@ -133,9 +155,37 @@ class EventTest {
             var otherVerificationKey =
                     KeyPairGenerator.getInstance("Ed25519").generateKeyPair().getPublic();
 
-            var exception =
-                    assertThrows(EventSourcingDbException.class, () -> event.verifySignature(otherVerificationKey));
+            var exception = assertThrows(
+                    SignatureVerificationFailedException.class, () -> event.verifySignature(otherVerificationKey));
             assertEquals("signature verification failed", exception.getMessage());
+        }
+
+        @Test
+        void throwsIfTheSignatureCanNotBeRead() {
+            container = Database.startWithSigningKey();
+            var event = writeEvent(new EventData(42));
+            var tamperedEvent = tamper(event, "signature", "esdb:signature:v1:00");
+
+            var exception = assertThrows(
+                    SignatureVerificationFailedException.class,
+                    () -> tamperedEvent.verifySignature(container.getVerificationKey()));
+            assertEquals("failed to verify signature", exception.getMessage());
+            assertInstanceOf(SignatureException.class, exception.getCause());
+        }
+
+        // A signature that is not hexadecimal fails before the verifier sees
+        // it, with the exception of the JDK's HexFormat. Callers may catch it,
+        // so it stays as it is.
+        @ParameterizedTest
+        @ValueSource(strings = {"0", "zz"})
+        void throwsAnIllegalArgumentExceptionIfTheSignatureIsNotHexadecimal(String signature) {
+            container = Database.startWithSigningKey();
+            var event = writeEvent(new EventData(42));
+            var tamperedEvent = tamper(event, "signature", "esdb:signature:v1:" + signature);
+
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> tamperedEvent.verifySignature(container.getVerificationKey()));
         }
 
         @Test

@@ -12,9 +12,8 @@ import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -26,18 +25,17 @@ import tools.jackson.databind.node.MissingNode;
 // LineStream hands out the items of an NDJSON stream as the caller consumes
 // them. It sends the request only once the caller starts to consume, and it
 // ends the stream with an exception if it is closed from somewhere else, or
-// if neither an item nor a heartbeat arrives in time.
+// if nothing arrives from the server for the stall timeout.
 final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
-    private static final ScheduledThreadPoolExecutor HEARTBEAT_TIMERS = heartbeatTimers();
-
     private final String action;
     private final Supplier<CompletableFuture<HttpResponse<InputStream>>> request;
     private final String itemType;
     private final Parser<T> parser;
-    private final @Nullable Duration heartbeatTimeout;
+    private final Duration stallTimeout;
+    private final Function<IOException, ? extends RuntimeException> stall;
     private final Set<LineStream<?>> openStreams;
 
-    private volatile @Nullable Supplier<RuntimeException> abortion;
+    private volatile boolean isClosed;
     private volatile @Nullable CompletableFuture<HttpResponse<InputStream>> response;
     private volatile @Nullable InputStream body;
     private @Nullable BufferedReader reader;
@@ -47,19 +45,22 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             Supplier<CompletableFuture<HttpResponse<InputStream>>> request,
             String itemType,
             Parser<T> parser,
-            @Nullable Duration heartbeatTimeout,
+            Duration stallTimeout,
+            Function<IOException, ? extends RuntimeException> stall,
             Set<LineStream<?>> openStreams) {
         super(Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL);
         this.action = action;
         this.request = request;
         this.itemType = itemType;
         this.parser = parser;
-        this.heartbeatTimeout = heartbeatTimeout;
+        this.stallTimeout = stallTimeout;
+        this.stall = stall;
         this.openStreams = openStreams;
     }
 
-    // A heartbeatTimeout of null means that the server sends no heartbeats on
-    // this stream, so it may stay silent for as long as it needs.
+    // A stream that receives nothing for the stall timeout after its headers
+    // arrived ends with the exception that stall returns for the IOException
+    // that ended the read.
     // The stream adds itself to openStreams, and removes itself once it has
     // ended, so that the client can end the streams that are still open when
     // it is closed.
@@ -68,22 +69,12 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             Supplier<CompletableFuture<HttpResponse<InputStream>>> request,
             String itemType,
             Parser<T> parser,
-            @Nullable Duration heartbeatTimeout,
+            Duration stallTimeout,
+            Function<IOException, ? extends RuntimeException> stall,
             Set<LineStream<?>> openStreams) {
-        var lineStream = new LineStream<>(action, request, itemType, parser, heartbeatTimeout, openStreams);
+        var lineStream = new LineStream<>(action, request, itemType, parser, stallTimeout, stall, openStreams);
         openStreams.add(lineStream);
         return StreamSupport.stream(lineStream, false).onClose(lineStream::close);
-    }
-
-    private static ScheduledThreadPoolExecutor heartbeatTimers() {
-        var executor = new ScheduledThreadPoolExecutor(
-                1,
-                Thread.ofPlatform()
-                        .daemon()
-                        .name("eventsourcingdb-heartbeat-timeout")
-                        .factory());
-        executor.setRemoveOnCancelPolicy(true);
-        return executor;
     }
 
     @Override
@@ -166,7 +157,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     }
 
     private BufferedReader open() {
-        throwIfAborted();
+        throwIfClosed();
         Http.throwIfInterrupted(action);
 
         var response = request.get();
@@ -174,59 +165,48 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
 
         InputStream body;
         try {
-            body = Http.await(action, response).body();
+            body = Http.await(action, response, stallTimeout).body();
         } catch (RuntimeException ex) {
-            throwIfAborted();
+            throwIfClosed();
             throw ex;
         }
         this.body = body;
 
-        var reader = new BufferedReader(new InputStreamReader(body, UTF_8));
+        var reader = new BufferedReader(new InputStreamReader(new StallGuard(body, stallTimeout, stall), UTF_8));
         this.reader = reader;
         return reader;
     }
 
     // Returns null once the stream has ended.
     private @Nullable String readLine(BufferedReader reader) {
-        throwIfAborted();
+        throwIfClosed();
 
-        var timer = heartbeatTimeout == null
-                ? null
-                : HEARTBEAT_TIMERS.schedule(
-                        () -> abort(HeartbeatTimeoutException::new), heartbeatTimeout.toNanos(), TimeUnit.NANOSECONDS);
         try {
             var line = reader.readLine();
-            throwIfAborted();
+            throwIfClosed();
             return line;
         } catch (IOException ex) {
-            throwIfAborted();
+            throwIfClosed();
             throw Http.failure(action, ex);
-        } finally {
-            if (timer != null) {
-                timer.cancel(false);
-            }
         }
     }
 
-    private void throwIfAborted() {
-        var abortion = this.abortion;
-        if (abortion != null) {
-            throw abortion.get();
+    // A stream that is closed from somewhere else reports the cancellation,
+    // rather than the failure that closing its body causes.
+    private void throwIfClosed() {
+        if (isClosed) {
+            throw Http.cancellation(action, null);
         }
     }
 
+    // Ends the stream, whether it has not started yet, waits for the server,
+    // or reads a line.
     void close() {
-        abort(() -> Http.cancellation(action, null));
-    }
-
-    // Ends the stream for the given reason. The first reason wins, so that a
-    // stream that is closed after it timed out still reports the timeout.
-    private void abort(Supplier<RuntimeException> reason) {
         synchronized (this) {
-            if (abortion != null) {
+            if (isClosed) {
                 return;
             }
-            abortion = reason;
+            isClosed = true;
         }
         openStreams.remove(this);
 

@@ -52,7 +52,7 @@ class WriteEventsTest {
         assertEquals("application/json", event.dataContentType());
         assertEquals(new EventData(42), event.data(EventData.class));
         assertEquals(42, event.data().path("value").asInt());
-        assertEquals(64, event.hash().length());
+        assertTrue(event.hash().matches("(esdb:hash:v2:)?[0-9a-f]{64}"), event.hash());
         assertEquals("0".repeat(64), event.predecessorHash());
         assertTrue(Duration.between(event.time(), Instant.now()).abs().toMinutes() < 1);
         assertEquals(Optional.empty(), event.traceParent());
@@ -174,13 +174,11 @@ class WriteEventsTest {
                         "io.eventsourcingdb.test",
                         Map.of("value", 23, "extra", true)))));
 
-        assertEquals(
-                "failed to write events, got HTTP status code '409', expected '200': schema conflict: event candidate does not match schema: additionalProperties 'extra' not allowed",
-                exception.getMessage());
         assertEquals("write events", exception.action());
         assertEquals(409, exception.statusCode());
+        assertTrue(exception.reason().endsWith("additionalProperties 'extra' not allowed"), exception.reason());
         assertEquals(
-                "schema conflict: event candidate does not match schema: additionalProperties 'extra' not allowed",
-                exception.reason());
+                "failed to write events, got HTTP status code '409', expected '200': " + exception.reason(),
+                exception.getMessage());
     }
 }

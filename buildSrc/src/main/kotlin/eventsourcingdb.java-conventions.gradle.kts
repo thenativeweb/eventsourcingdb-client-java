@@ -93,6 +93,14 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
     finalizedBy(tasks.jacocoTestReport)
+
+    // The tests run against the image tag that EVENTSOURCINGDB_IMAGE_TAG names.
+    // Gradle does not see environment variables on its own, so without this,
+    // a run against another tag would count as up to date and run nothing.
+    inputs.property(
+        "eventsourcingDbImageTag",
+        providers.environmentVariable("EVENTSOURCINGDB_IMAGE_TAG").orElse(""),
+    )
 }
 
 jacoco {

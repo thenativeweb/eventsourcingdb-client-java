@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -29,10 +30,27 @@ class CloseTest {
         return Operations.all();
     }
 
+    @FunctionalInterface
+    private interface Moment {
+        void await() throws InterruptedException;
+    }
+
     // Runs the operation in a thread of its own, closes the client a while
     // after the server got the request, and returns what the operation threw.
     private static Throwable closeAfterRequest(FakeServer server, Client client, Runnable operation)
             throws InterruptedException {
+        return closeAt(
+                () -> {
+                    server.awaitRequest();
+                    Thread.sleep(Duration.ofMillis(300));
+                },
+                client,
+                operation);
+    }
+
+    // Runs the operation in a thread of its own, closes the client once the
+    // moment has come, and returns what the operation threw.
+    private static Throwable closeAt(Moment moment, Client client, Runnable operation) throws InterruptedException {
         var thrown = new AtomicReference<Throwable>();
 
         var thread = Thread.ofPlatform().start(() -> {
@@ -43,8 +61,7 @@ class CloseTest {
             }
         });
 
-        server.awaitRequest();
-        Thread.sleep(Duration.ofMillis(300));
+        moment.await();
         client.close();
         thread.join();
 
@@ -90,10 +107,17 @@ class CloseTest {
         })) {
             var client = new Client(server.url(), "secret");
             var subjectsRead = new ArrayList<String>();
+            var hasSubject = new CountDownLatch(1);
 
-            var thrown = closeAfterRequest(server, client, () -> {
+            // The client is closed once the caller has its first subject,
+            // rather than after a fixed time, which a slow machine may need to
+            // deliver it.
+            var thrown = closeAt(hasSubject::await, client, () -> {
                 try (var subjects = client.readSubjects("/")) {
-                    subjects.forEach(subjectsRead::add);
+                    subjects.forEach(subject -> {
+                        subjectsRead.add(subject);
+                        hasSubject.countDown();
+                    });
                 }
             });
 
