@@ -61,7 +61,7 @@ final class Operations {
                 Operation.stream("observe events", client -> client.observeEvents("/", new ObserveEventsOptions(true))),
                 Operation.stream(
                         "run EventQL query", client -> client.runEventQlQuery("FROM e IN events PROJECT INTO e")),
-                Operation.stream("read subjects", client -> client.readSubjects("/")),
+                Operation.stream("read subjects", client -> client.readSubjects("/", new ReadSubjectsOptions(true))),
                 Operation.stream("read event types", Client::readEventTypes),
                 Operation.request("read event type", client -> client.readEventType("io.eventsourcingdb.test")),
                 Operation.request(

@@ -114,7 +114,7 @@ class CloseTest {
             // rather than after a fixed time, which a slow machine may need to
             // deliver it.
             var thrown = closeAt(hasSubject::await, client, () -> {
-                try (var subjects = client.readSubjects("/")) {
+                try (var subjects = client.readSubjects("/", new ReadSubjectsOptions(true))) {
                     subjects.forEach(subject -> {
                         subjectsRead.add(subject);
                         hasSubject.countDown();
@@ -131,7 +131,7 @@ class CloseTest {
     void endsAStreamThatHasNotStartedYet() {
         try (var server = FakeServer.respondingWith(200, "")) {
             var client = new Client(server.url(), "secret");
-            var subjects = client.readSubjects("/");
+            var subjects = client.readSubjects("/", new ReadSubjectsOptions(true));
 
             client.close();
 

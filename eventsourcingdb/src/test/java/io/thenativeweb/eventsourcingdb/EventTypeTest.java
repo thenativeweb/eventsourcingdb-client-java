@@ -15,7 +15,8 @@ class EventTypeTest {
         try (var server = FakeServer.start((exchange, fakeServer) -> {
                     FakeServer.startStream(exchange);
                     FakeServer.writeLine(
-                            exchange, "{\"type\":\"eventType\",\"payload\":{\"eventType\":\"io.x.a\",\"isPhantom\":false}}");
+                            exchange,
+                            "{\"type\":\"eventType\",\"payload\":{\"eventType\":\"io.x.a\",\"isPhantom\":false}}");
                     FakeServer.writeLine(
                             exchange,
                             "{\"type\":\"eventType\",\"payload\":{\"eventType\":\"io.x.b\",\"isPhantom\":true,"

@@ -175,7 +175,7 @@ class CancellationTest {
     @Test
     void aCloseEndsAStreamThatStopsInTheMiddle() {
         try (var server = streamingOneSubjectAndHanging();
-                var subjects = new Client(server.url(), "secret").readSubjects("/");
+                var subjects = new Client(server.url(), "secret").readSubjects("/", new ReadSubjectsOptions(true));
                 var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var subjectsRead = new ArrayList<String>();
             var hasSubject = new CountDownLatch(1);
@@ -207,7 +207,7 @@ class CancellationTest {
             var hasSubject = new CountDownLatch(1);
 
             var outcome = interruptAt(hasSubject::await, () -> {
-                try (var subjects = client.readSubjects("/")) {
+                try (var subjects = client.readSubjects("/", new ReadSubjectsOptions(true))) {
                     subjects.forEach(subject -> {
                         subjectsRead.add(subject);
                         hasSubject.countDown();

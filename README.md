@@ -547,21 +547,38 @@ client.registerEventSchema(
 
 ### Listing Subjects
 
-To list all subjects, call the `readSubjects` method with `/` as the base subject. The method returns a `Stream`, which you should close once you are done:
+To list subjects, call the `readSubjects` method with a subject and an options object. Set the `recursive` option to `true` to list the subject and all subjects nested in it. To list all subjects, provide `/` as the subject. The method returns a `Stream`, which you should close once you are done:
 
 ```java
-try (var subjects = client.readSubjects("/")) {
+try (var subjects = client.readSubjects(
+  "/",
+  new ReadSubjectsOptions(true)
+)) {
   subjects.forEach(subject -> {
     // ...
   });
 }
 ```
 
-If you only want to list subjects within a specific branch, provide the desired base subject instead:
+If you only want to list subjects within a specific branch, provide the desired subject instead:
 
 ```java
-try (var subjects = client.readSubjects("/books")) {
+try (var subjects = client.readSubjects(
+  "/books",
+  new ReadSubjectsOptions(true)
+)) {
   // ...
+}
+```
+
+If you set the `recursive` option to `false`, the stream holds the subject alone, provided that there are events within it. This tells whether a subject exists:
+
+```java
+try (var subjects = client.readSubjects(
+  "/books/42",
+  new ReadSubjectsOptions(false)
+)) {
+  var exists = subjects.findAny().isPresent();
 }
 ```
 
@@ -572,7 +589,10 @@ If you need to abort listing, stop consuming the stream. However, this only work
 To abort listing independently of that, close the stream from somewhere else:
 
 ```java
-try (var subjects = client.readSubjects("/")) {
+try (var subjects = client.readSubjects(
+  "/",
+  new ReadSubjectsOptions(true)
+)) {
   // Somewhere else, close the stream, which will cause
   // reading to end.
   scheduler.schedule(subjects::close, 5, TimeUnit.SECONDS);

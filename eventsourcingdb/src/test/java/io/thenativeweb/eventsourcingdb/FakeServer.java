@@ -10,6 +10,8 @@ import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.URI;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -24,6 +26,10 @@ final class FakeServer implements AutoCloseable {
     private final CountDownLatch released = new CountDownLatch(1);
     private final CountDownLatch requested = new CountDownLatch(1);
     private final AtomicInteger requestCount = new AtomicInteger();
+    private final List<Request> requests = new CopyOnWriteArrayList<>();
+
+    // A request as the server received it.
+    record Request(String method, String path, String body) {}
 
     private FakeServer(Handler handler) {
         try {
@@ -36,7 +42,9 @@ final class FakeServer implements AutoCloseable {
             requestCount.incrementAndGet();
             requested.countDown();
             try (exchange) {
-                exchange.getRequestBody().readAllBytes();
+                var body = new String(exchange.getRequestBody().readAllBytes(), UTF_8);
+                requests.add(new Request(
+                        exchange.getRequestMethod(), exchange.getRequestURI().getPath(), body));
                 handler.handle(exchange, this);
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
@@ -103,6 +111,10 @@ final class FakeServer implements AutoCloseable {
 
     int requestCount() {
         return requestCount.get();
+    }
+
+    List<Request> requests() {
+        return List.copyOf(requests);
     }
 
     @Override

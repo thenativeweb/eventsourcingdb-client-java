@@ -38,7 +38,7 @@ class StreamTest {
     @Test
     void skipsBlankLinesAndHeartbeats() {
         try (var server = streaming("", Lines.HEARTBEAT, Lines.SUBJECT);
-                var subjects = new Client(server.url(), "secret").readSubjects("/")) {
+                var subjects = new Client(server.url(), "secret").readSubjects("/", new ReadSubjectsOptions(true))) {
             assertEquals(List.of("/"), subjects.toList());
         }
     }
@@ -47,7 +47,7 @@ class StreamTest {
     void endsWithTheErrorTheServerSends() {
         try (var server = streaming(
                         Lines.SUBJECT, "{\"type\":\"error\",\"payload\":{\"error\":\"something went wrong\"}}");
-                var subjects = new Client(server.url(), "secret").readSubjects("/")) {
+                var subjects = new Client(server.url(), "secret").readSubjects("/", new ReadSubjectsOptions(true))) {
             var subjectsRead = new ArrayList<String>();
 
             var exception = assertThrows(DbApiException.class, () -> subjects.forEach(subjectsRead::add));
@@ -64,7 +64,7 @@ class StreamTest {
     @Test
     void failsOnAnUnsupportedLineType() {
         try (var server = streaming("{\"type\":\"something-else\"}");
-                var subjects = new Client(server.url(), "secret").readSubjects("/")) {
+                var subjects = new Client(server.url(), "secret").readSubjects("/", new ReadSubjectsOptions(true))) {
             var exception = assertThrows(EventSourcingDbException.class, subjects::toList);
 
             assertEquals("failed to handle unsupported line type: something-else", exception.getMessage());
@@ -74,7 +74,7 @@ class StreamTest {
     @Test
     void ignoresPropertiesOfALineItDoesNotKnow() {
         try (var server = streaming("{\"type\":\"subject\",\"payload\":{\"subject\":\"/\"},\"extra\":1}");
-                var subjects = new Client(server.url(), "secret").readSubjects("/")) {
+                var subjects = new Client(server.url(), "secret").readSubjects("/", new ReadSubjectsOptions(true))) {
             assertEquals(List.of("/"), subjects.toList());
         }
     }
@@ -82,7 +82,7 @@ class StreamTest {
     @Test
     void failsOnALineThatIsNoObject() {
         try (var server = streaming("[]");
-                var subjects = new Client(server.url(), "secret").readSubjects("/")) {
+                var subjects = new Client(server.url(), "secret").readSubjects("/", new ReadSubjectsOptions(true))) {
             var exception = assertThrows(EventSourcingDbException.class, subjects::toList);
 
             assertEquals("failed to handle unsupported line type: ", exception.getMessage());
@@ -102,7 +102,7 @@ class StreamTest {
     @Test
     void failsOnAMalformedLine() {
         try (var server = streaming("{\"type\":");
-                var subjects = new Client(server.url(), "secret").readSubjects("/")) {
+                var subjects = new Client(server.url(), "secret").readSubjects("/", new ReadSubjectsOptions(true))) {
             assertThrows(JacksonException.class, subjects::toList);
         }
     }
@@ -114,7 +114,7 @@ class StreamTest {
                     exchange.sendResponseHeaders(200, 1000);
                     FakeServer.writeLine(exchange, Lines.SUBJECT);
                 });
-                var subjects = new Client(server.url(), "secret").readSubjects("/")) {
+                var subjects = new Client(server.url(), "secret").readSubjects("/", new ReadSubjectsOptions(true))) {
             var subjectsRead = new ArrayList<String>();
 
             var exception = assertThrows(EventSourcingDbException.class, () -> subjects.forEach(subjectsRead::add));

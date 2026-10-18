@@ -13,6 +13,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
@@ -41,6 +42,8 @@ import tools.jackson.databind.node.ObjectNode;
  * <p>A client is safe to use from multiple threads.
  */
 public final class Client implements AutoCloseable {
+    private static final Pattern SURROUNDING_SLASHES = Pattern.compile("^/+|/+$");
+
     private final URI baseUrl;
     private final String apiToken;
     private final Duration stallTimeout;
@@ -335,22 +338,37 @@ public final class Client implements AutoCloseable {
     }
 
     /**
-     * Lists the subjects within the given base subject. The list includes the base subject itself, unless there are no
-     * events within it.
+     * Reads the subjects, i.e. the subjects that events were written to, and the subjects they are nested in.
      *
-     * @param baseSubject the subject to list the subjects within, e.g. {@code /} for all subjects
+     * <p>Read recursively, the stream holds the subject itself, and every subject nested in it, e.g. {@code /books} and
+     * {@code /books/42} for {@code /books}. Read not recursively, it holds the subject alone. Either way, it holds a
+     * subject only if there are events within it, so it is empty for a subject that has no events, and none nested.
+     *
+     * @param subject the subject to read, e.g. {@code /books}, or {@code /} to read all subjects, if the options make
+     *     the read recursive
+     * @param options the options, i.e. whether to read the subjects nested in the subject, too
      * @return a stream of the subjects
      */
-    public Stream<String> readSubjects(String baseSubject) {
+    public Stream<String> readSubjects(String subject, ReadSubjectsOptions options) {
         var body = Json.MAPPER.createObjectNode();
-        body.put("baseSubject", baseSubject);
+        body.put("baseSubject", subject);
 
-        return stream(
+        var subjects = stream(
                 "read subjects",
                 post("/api/v1/read-subjects", body),
                 "subject",
                 (payload, rawData) -> payload.path("subject").asString(),
                 V1ErrorCodes.ANY_REQUEST);
+
+        // The v1 API always reads recursively, so the subject alone is the
+        // one subject of the stream that is the subject itself. The server
+        // names it without the slashes around it, e.g. /books for /books/.
+        if (options.recursive()) {
+            return subjects;
+        }
+
+        var subjectItself = "/" + SURROUNDING_SLASHES.matcher(subject).replaceAll("");
+        return subjects.filter(subjectItself::equals);
     }
 
     /**

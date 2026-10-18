@@ -49,7 +49,10 @@ class ConnectionStalledExceptionTest {
                         "run EventQL query",
                         client -> client.runEventQlQuery("FROM e IN events PROJECT INTO e"),
                         Lines.ROW),
-                new ItemStream("read subjects", client -> client.readSubjects("/"), Lines.SUBJECT),
+                new ItemStream(
+                        "read subjects",
+                        client -> client.readSubjects("/", new ReadSubjectsOptions(true)),
+                        Lines.SUBJECT),
                 new ItemStream("read event types", Client::readEventTypes, Lines.EVENT_TYPE));
     }
 
@@ -161,7 +164,7 @@ class ConnectionStalledExceptionTest {
                     FakeServer.startStream(exchange);
                     writeInPieces(exchange.getResponseBody(), Lines.SUBJECT + "\n");
                 });
-                var subjects = clientWith(server).readSubjects("/")) {
+                var subjects = clientWith(server).readSubjects("/", new ReadSubjectsOptions(true))) {
             assertEquals(List.of("/"), subjects.toList());
         }
     }
