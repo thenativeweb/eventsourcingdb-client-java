@@ -947,3 +947,77 @@ class BookServiceTest {
   // ...
 }
 ```
+
+## Upgrading From Version 1
+
+Version 2 talks to servers with and without the v2 API, as described in [Talking to Servers With and Without the v2 API](#talking-to-servers-with-and-without-the-v2-api), and follows the v2 API in its own API. These are the changes that may require changes to your code.
+
+`DbApiException` describes an error with its `code`, its `description`, its `details`, and its `status`. `statusCode()` is now `status()`, and `reason()` is now `description()`:
+
+```java
+// Before
+if (ex.statusCode() == 409) {
+  var reason = ex.reason();
+}
+
+// After
+if (ex.code().equals(ErrorCode.PRECONDITION_VIOLATED)) {
+  var description = ex.description();
+}
+```
+
+A server with the v2 API reports the errors of a request it accepted with the status `200` and a code, e.g. a precondition that does not hold, which a server without it reports with `409`. So tell errors apart by their `code` rather than by their `status`. For details, see [Handling Errors](#handling-errors).
+
+An error that the server reports within a stream is a `DbApiException` with the status `200`, instead of a plain `EventSourcingDbException`, which it extends. Code that catches `EventSourcingDbException` keeps working.
+
+`HeartbeatTimeoutException` is removed. Every stall ends with a `ConnectionStalledException`, also once observing events or running an EventQL query has started:
+
+```java
+// Before
+} catch (HeartbeatTimeoutException ex) {
+
+// After
+} catch (ConnectionStalledException ex) {
+```
+
+Writing events and registering an event schema throw an `OutcomeUnknownException` if they fail in a way that leaves open whether the server stored the write, e.g. after a stall, a broken connection, or a `500`. Its cause is the failure that the methods threw before. A write whose thread is interrupted after the request was sent throws it, too, with the `CancellationException` as its cause:
+
+```java
+// Before
+} catch (CancellationException ex) {
+  // The events may have been written.
+}
+
+// After
+} catch (OutcomeUnknownException ex) {
+  // The events may have been written.
+}
+```
+
+For details, see [Knowing Whether a Write Was Stored](#knowing-whether-a-write-was-stored).
+
+`EventType` names the type `type`, and tells with `hasEvents` whether events of the type were written, which is the opposite of `isPhantom`:
+
+```java
+// Before
+var name = eventType.eventType();
+var isPhantom = eventType.isPhantom();
+
+// After
+var name = eventType.type();
+var hasEvents = eventType.hasEvents();
+```
+
+`readSubjects` takes the subject and options, whose `recursive` you have to set. Set it to `true` to read what `readSubjects` read before:
+
+```java
+// Before
+client.readSubjects("/books");
+
+// After
+client.readSubjects("/books", new ReadSubjectsOptions(true));
+```
+
+Observing events ends with an `EventSourcingDbException` if the server ends the stream without an error, which it does only after a failure it can not report within the stream. Before, observing ended as if it were complete.
+
+The v2 API reads with the HTTP method `QUERY`. If a proxy, a load balancer, or a firewall sits in front of the database, make sure that it lets `QUERY` through.
