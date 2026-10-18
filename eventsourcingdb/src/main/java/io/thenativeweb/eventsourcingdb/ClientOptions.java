@@ -94,8 +94,7 @@ public record ClientOptions(
      * starts over with everything that arrives, be it a byte, an item, or a heartbeat. It is not a limit for the whole
      * request, so a long stream that keeps receiving items or heartbeats is never cut off, and the time you spend on an
      * item does not count. It applies to every request. A request that stalls ends with a
-     * {@link ConnectionStalledException}, except for observing events and running EventQL queries, which end with a
-     * {@link HeartbeatTimeoutException} once their stream has started.
+     * {@link ConnectionStalledException}.
      *
      * @param stallTimeout how long a request may receive nothing from the server before it fails, 30 seconds by
      *     default

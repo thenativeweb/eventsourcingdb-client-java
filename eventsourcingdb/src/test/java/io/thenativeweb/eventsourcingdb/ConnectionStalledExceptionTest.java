@@ -12,21 +12,46 @@ import java.io.OutputStream;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.List;
-import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 // A request fails once nothing arrives from the server for the stall timeout,
-// however far it got, but it is never cut off while something keeps arriving.
+// however far it got, but it is never cut off while something keeps arriving,
+// be it a byte, an item, or a heartbeat.
 @Timeout(10)
 class ConnectionStalledExceptionTest {
     private static final Duration STALL_TIMEOUT = Duration.ofMillis(300);
 
-    // The streams of these operations carry heartbeats, so a stall within them
-    // ends with a HeartbeatTimeoutException instead.
-    private static final Set<String> HEARTBEAT_STREAMS = Set.of("observe events", "run EventQL query");
+    // A stream along with a line that holds one of its items.
+    record ItemStream(String name, Function<Client, Stream<?>> open, String item) {
+        @Override
+        public String toString() {
+            return name;
+        }
+    }
+
+    static List<ItemStream> itemStreams() {
+        return List.of(
+                new ItemStream(
+                        "read events", client -> client.readEvents("/", new ReadEventsOptions(true)), Lines.EVENT),
+                new ItemStream(
+                        "observe events",
+                        client -> client.observeEvents("/", new ObserveEventsOptions(true)),
+                        Lines.EVENT),
+                new ItemStream(
+                        "run EventQL query",
+                        client -> client.runEventQlQuery("FROM e IN events PROJECT INTO e"),
+                        Lines.ROW),
+                new ItemStream("read subjects", client -> client.readSubjects("/"), Lines.SUBJECT),
+                new ItemStream("read event types", Client::readEventTypes, Lines.EVENT_TYPE));
+    }
 
     static List<Operation> all() {
         return Operations.all();
@@ -38,10 +63,8 @@ class ConnectionStalledExceptionTest {
                 .toList();
     }
 
-    static List<Operation> streamsWithoutHeartbeats() {
-        return Operations.streams().stream()
-                .filter(operation -> !HEARTBEAT_STREAMS.contains(operation.action()))
-                .toList();
+    static List<Operation> streams() {
+        return Operations.streams();
     }
 
     private static Client clientWith(FakeServer server) {
@@ -96,8 +119,8 @@ class ConnectionStalledExceptionTest {
     }
 
     @ParameterizedTest
-    @MethodSource("streamsWithoutHeartbeats")
-    void endsAStreamWithoutHeartbeatsThatStopsInTheMiddle(Operation operation) {
+    @MethodSource("streams")
+    void endsAStreamThatStopsAfterAHeartbeat(Operation operation) {
         try (var server = FakeServer.start((exchange, fakeServer) -> {
             FakeServer.startStream(exchange);
             FakeServer.writeLine(exchange, Lines.HEARTBEAT);
@@ -144,24 +167,69 @@ class ConnectionStalledExceptionTest {
         }
     }
 
-    // The second subject arrives while the caller is still busy with the
-    // first, so the client has to read again after the caller's time.
-    @Test
-    void doesNotCountTheTimeTheCallerSpendsOnAnItem() {
+    @ParameterizedTest
+    @MethodSource("itemStreams")
+    void keepsAStreamAliveWhileHeartbeatsArrive(ItemStream stream) {
         try (var server = FakeServer.start((exchange, fakeServer) -> {
                     FakeServer.startStream(exchange);
-                    FakeServer.writeLine(exchange, Lines.SUBJECT);
-                    Thread.sleep(STALL_TIMEOUT.dividedBy(3));
-                    FakeServer.writeLine(exchange, Lines.SUBJECT);
+                    for (var i = 0; i < 6; i++) {
+                        FakeServer.writeLine(exchange, Lines.HEARTBEAT);
+                        Thread.sleep(STALL_TIMEOUT.dividedBy(3));
+                    }
+                    FakeServer.writeLine(exchange, stream.item());
                     fakeServer.hang();
                 });
-                var subjects = clientWith(server).readSubjects("/")) {
-            var count = subjects.limit(2)
-                    .peek(subject -> sleep(STALL_TIMEOUT.multipliedBy(2)))
+                var items = stream.open().apply(clientWith(server))) {
+            assertEquals(1, items.limit(1).count());
+        }
+    }
+
+    // The second item arrives while the caller is still busy with the first,
+    // so the client has to read again after the caller's time.
+    @ParameterizedTest
+    @MethodSource("itemStreams")
+    void doesNotCountTheTimeTheCallerSpendsOnAnItem(ItemStream stream) {
+        try (var server = FakeServer.start((exchange, fakeServer) -> {
+                    FakeServer.startStream(exchange);
+                    FakeServer.writeLine(exchange, stream.item());
+                    Thread.sleep(STALL_TIMEOUT.dividedBy(3));
+                    FakeServer.writeLine(exchange, stream.item());
+                    fakeServer.hang();
+                });
+                var items = stream.open().apply(clientWith(server))) {
+            var count = items.limit(2)
+                    .peek(item -> sleep(STALL_TIMEOUT.multipliedBy(2)))
                     .count();
 
             assertEquals(2, count);
         }
+    }
+
+    @ParameterizedTest
+    @MethodSource("itemStreams")
+    void endsAStreamThatIsClosedWithACancellationRatherThanAStall(ItemStream stream) {
+        try (var server = FakeServer.start((exchange, fakeServer) -> {
+                    FakeServer.startStream(exchange);
+                    FakeServer.writeLine(exchange, Lines.HEARTBEAT);
+                    fakeServer.hang();
+                });
+                var items = stream.open()
+                        .apply(new Client(
+                                server.url(), "secret", new ClientOptions().withStallTimeout(Duration.ofSeconds(5))));
+                var scheduler = Executors.newSingleThreadScheduledExecutor()) {
+            scheduler.schedule(items::close, 300, TimeUnit.MILLISECONDS);
+
+            assertThrows(CancellationException.class, () -> items.forEach(item -> {}));
+        }
+    }
+
+    @Test
+    void namesTheDefaultStallTimeoutInItsMessage() {
+        var exception = new ConnectionStalledException(
+                "observe events", new ClientOptions().stallTimeout(), new IOException("stalled"));
+
+        assertEquals(
+                "failed to observe events, nothing arrived from the server for 30 seconds", exception.getMessage());
     }
 
     private static void sleep(Duration duration) {

@@ -13,7 +13,6 @@ import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -32,7 +31,6 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     private final String itemType;
     private final Parser<T> parser;
     private final Duration stallTimeout;
-    private final Function<IOException, ? extends RuntimeException> stall;
     private final CodeMapping codes;
     private final Set<LineStream<?>> openStreams;
 
@@ -47,7 +45,6 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             String itemType,
             Parser<T> parser,
             Duration stallTimeout,
-            Function<IOException, ? extends RuntimeException> stall,
             CodeMapping codes,
             Set<LineStream<?>> openStreams) {
         super(Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL);
@@ -56,14 +53,12 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
         this.itemType = itemType;
         this.parser = parser;
         this.stallTimeout = stallTimeout;
-        this.stall = stall;
         this.codes = codes;
         this.openStreams = openStreams;
     }
 
-    // A stream that receives nothing for the stall timeout after its headers
-    // arrived ends with the exception that stall returns for the IOException
-    // that ended the read.
+    // A stream that receives nothing for the stall timeout, not even a
+    // heartbeat, ends with a ConnectionStalledException.
     // The stream adds itself to openStreams, and removes itself once it has
     // ended, so that the client can end the streams that are still open when
     // it is closed.
@@ -73,10 +68,9 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
             String itemType,
             Parser<T> parser,
             Duration stallTimeout,
-            Function<IOException, ? extends RuntimeException> stall,
             CodeMapping codes,
             Set<LineStream<?>> openStreams) {
-        var lineStream = new LineStream<>(action, request, itemType, parser, stallTimeout, stall, codes, openStreams);
+        var lineStream = new LineStream<>(action, request, itemType, parser, stallTimeout, codes, openStreams);
         openStreams.add(lineStream);
         return StreamSupport.stream(lineStream, false).onClose(lineStream::close);
     }
@@ -176,7 +170,9 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
         }
         this.body = body;
 
-        var reader = new BufferedReader(new InputStreamReader(new StallGuard(body, stallTimeout, stall), UTF_8));
+        var reader = new BufferedReader(new InputStreamReader(
+                new StallGuard(body, stallTimeout, ex -> new ConnectionStalledException(action, stallTimeout, ex)),
+                UTF_8));
         this.reader = reader;
         return reader;
     }

@@ -87,8 +87,6 @@ var client = new Client(baseUrl, apiToken, new ClientOptions()
   .withStallTimeout(Duration.ofSeconds(10)));
 ```
 
-*Note that [running EventQL queries](#running-eventql-queries) and [observing events](#observing-events) end with a `HeartbeatTimeoutException` instead, once their stream has started.*
-
 ### Configuring the Serialization of Event Data
 
 The client serializes and deserializes the data of events with a JSON mapper of its own. To apply the configuration of your application instead, e.g. its modules or its naming strategy, hand over your `JsonMapper` using `ClientOptions`:
@@ -395,7 +393,7 @@ The query then ends with a `CancellationException`, so that an aborted query can
 
 #### Detecting a Stalled Connection
 
-While a query runs, the server sends a heartbeat every second whenever there is no row to send. If neither a row nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, the query ends with a `HeartbeatTimeoutException`, and the client closes the connection:
+While a query runs, the server sends a heartbeat every second whenever there is no row to send. If neither a row nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, the query ends with a `ConnectionStalledException`, and the client closes the connection:
 
 ```java
 try (var rows = client.runEventQlQuery(
@@ -404,7 +402,7 @@ try (var rows = client.runEventQlQuery(
   rows.forEach(row -> {
     // ...
   });
-} catch (HeartbeatTimeoutException ex) {
+} catch (ConnectionStalledException ex) {
   // ...
 }
 ```
@@ -506,7 +504,7 @@ Observing then ends with a `CancellationException`. Since observing does not end
 
 #### Detecting a Stalled Connection
 
-While there are no new events, the server sends a heartbeat every second. If neither an event nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, observing ends with a `HeartbeatTimeoutException`, and the client closes the connection:
+While there are no new events, the server sends a heartbeat every second. If neither an event nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, observing ends with a `ConnectionStalledException`, and the client closes the connection:
 
 ```java
 try (var events = client.observeEvents(
@@ -516,7 +514,7 @@ try (var events = client.observeEvents(
   events.forEach(event -> {
     // ...
   });
-} catch (HeartbeatTimeoutException ex) {
+} catch (ConnectionStalledException ex) {
   // ...
 }
 ```
@@ -709,7 +707,7 @@ try {
 
 If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`, and if the hash of the event is of a version the client does not know, an `UnsupportedHashVersionException`. A signature that is not hexadecimal throws an `IllegalArgumentException` instead. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
 
-If a request receives nothing from the server for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and the request ends with a `ConnectionStalledException`. Once observing events or running an EventQL query has started, it ends with a `HeartbeatTimeoutException` instead, as nothing arriving there means that not even a heartbeat arrived.
+If a request receives nothing from the server for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and the request ends with a `ConnectionStalledException`.
 
 If a request is aborted, because its thread is interrupted, because its stream is closed from somewhere else, or because the client is closed, it ends with a `CancellationException`.
 

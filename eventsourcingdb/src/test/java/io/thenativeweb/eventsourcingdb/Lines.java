@@ -10,6 +10,9 @@ final class Lines {
 
     static final String SUBJECT = "{\"type\":\"subject\",\"payload\":{\"subject\":\"/\"}}";
 
+    static final String EVENT_TYPE =
+            "{\"type\":\"eventType\",\"payload\":{\"eventType\":\"io.x.y\",\"isPhantom\":false}}";
+
     // Characters that the server treats differently in the data of an event:
     // it escapes <, &, and > as \u003c, \u0026, and \u003e, and passes on
     // U+00E9 (e with acute, as a single code point) and U+1F600 (grinning

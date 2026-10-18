@@ -1,6 +1,5 @@
 package io.thenativeweb.eventsourcingdb;
 
-import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -12,7 +11,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Function;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
@@ -234,12 +232,7 @@ public final class Client implements AutoCloseable {
         }
 
         return stream(
-                "read events",
-                post("/api/v1/read-events", body),
-                "event",
-                this::parseEvent,
-                false,
-                V1ErrorCodes.READ_EVENTS);
+                "read events", post("/api/v1/read-events", body), "event", this::parseEvent, V1ErrorCodes.READ_EVENTS);
     }
 
     /**
@@ -249,7 +242,7 @@ public final class Client implements AutoCloseable {
      *
      * <p>While there are no new events, the server sends a heartbeat every second. If neither an event nor a heartbeat
      * arrives for the stall timeout, 30 seconds by default, e.g. because a proxy keeps the connection open but no longer
-     * passes anything on, the stream ends with a {@link HeartbeatTimeoutException}, and the client closes the
+     * passes anything on, the stream ends with a {@link ConnectionStalledException}, and the client closes the
      * connection. The time you spend on an event does not count.
      *
      * @param subject the subject to observe the events of, e.g. {@code /books/42}, or {@code /} to observe all events, if
@@ -278,7 +271,6 @@ public final class Client implements AutoCloseable {
                 post("/api/v1/observe-events", body),
                 "event",
                 this::parseEvent,
-                true,
                 V1ErrorCodes.ANY_REQUEST);
     }
 
@@ -302,7 +294,7 @@ public final class Client implements AutoCloseable {
      *
      * <p>While the query runs, the server sends a heartbeat every second whenever there is no row to send. If neither a
      * row nor a heartbeat arrives for the stall timeout, 30 seconds by default, the stream ends with a
-     * {@link HeartbeatTimeoutException}, and the client closes the connection. The time you spend on a row does not
+     * {@link ConnectionStalledException}, and the client closes the connection. The time you spend on a row does not
      * count.
      *
      * @param query the query, e.g. {@code FROM e IN events PROJECT INTO e}
@@ -333,12 +325,7 @@ public final class Client implements AutoCloseable {
         body.put("query", query);
 
         return stream(
-                "run EventQL query",
-                post("/api/v1/run-eventql-query", body),
-                "row",
-                parser,
-                true,
-                V1ErrorCodes.ANY_REQUEST);
+                "run EventQL query", post("/api/v1/run-eventql-query", body), "row", parser, V1ErrorCodes.ANY_REQUEST);
     }
 
     /**
@@ -357,7 +344,6 @@ public final class Client implements AutoCloseable {
                 post("/api/v1/read-subjects", body),
                 "subject",
                 (payload, rawData) -> payload.path("subject").asString(),
-                false,
                 V1ErrorCodes.ANY_REQUEST);
     }
 
@@ -373,7 +359,6 @@ public final class Client implements AutoCloseable {
                 post("/api/v1/read-event-types", Json.MAPPER.createObjectNode()),
                 "eventType",
                 (payload, rawData) -> EventType.from(payload),
-                false,
                 V1ErrorCodes.ANY_REQUEST);
     }
 
@@ -459,17 +444,7 @@ public final class Client implements AutoCloseable {
     }
 
     private <T> Stream<T> stream(
-            String action,
-            HttpRequest request,
-            String itemType,
-            LineStream.Parser<T> parser,
-            boolean hasHeartbeats,
-            CodeMapping codes) {
-        // On a stream with heartbeats, a stall means that the heartbeats
-        // stopped, which HeartbeatTimeoutException reports.
-        Function<IOException, RuntimeException> stall = hasHeartbeats
-                ? ex -> new HeartbeatTimeoutException(stallTimeout)
-                : ex -> new ConnectionStalledException(action, stallTimeout, ex);
+            String action, HttpRequest request, String itemType, LineStream.Parser<T> parser, CodeMapping codes) {
 
         synchronized (lock) {
             throwIfClosed();
@@ -480,7 +455,6 @@ public final class Client implements AutoCloseable {
                     itemType,
                     parser,
                     stallTimeout,
-                    stall,
                     codes,
                     openStreams);
         }
