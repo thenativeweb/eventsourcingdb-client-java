@@ -629,7 +629,7 @@ var eventType = client.readEventType("io.eventsourcingdb.library.book-acquired")
 
 ### Verifying an Event's Hash
 
-To verify the integrity of an event, call the `verifyHash` method on the event instance. This recomputes the event's hash locally and compares it to the hash stored in the event. If the hashes differ, the method throws a `HashVerificationFailedException`:
+To verify the integrity of an event, call the `verifyHash` method on the event instance. This recomputes the event's hash locally and compares it to the hash stored in the event, and checks that the data of the event is still what the server sent, so changing the tree that `data()` returns fails the verification as well. If the hashes or the data differ, the method throws a `HashVerificationFailedException`:
 
 ```java
 event.verifyHash();
