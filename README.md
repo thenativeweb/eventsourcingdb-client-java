@@ -828,6 +828,12 @@ public class BookService {
 
 If one of the two properties is not set, the application fails to start.
 
+To change the [stall timeout](#configuring-the-stall-timeout), which is 30 seconds by default, set `eventsourcingdb.stall-timeout`, e.g. to `10s`. A value of zero or less fails the start of the application:
+
+```properties
+eventsourcingdb.stall-timeout=10s
+```
+
 The client serializes and deserializes the data of events with the `JsonMapper` of Spring Boot, so the data follows the Jackson configuration of your application, e.g. its naming strategy. When the application shuts down, Spring Boot closes the client.
 
 To configure the client in other ways, e.g. with an HTTP client of your own, define a bean of type `Client`. The starter then uses yours instead of creating one. To connect it to the configured instance, inject `EventSourcingDbConnectionDetails`:

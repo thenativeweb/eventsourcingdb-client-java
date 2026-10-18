@@ -6,14 +6,20 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.thenativeweb.eventsourcingdb.Client;
+import io.thenativeweb.eventsourcingdb.ConnectionStalledException;
 import io.thenativeweb.eventsourcingdb.EventCandidate;
 import io.thenativeweb.eventsourcingdb.testcontainers.Container;
+import java.io.IOException;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.util.List;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -113,6 +119,41 @@ class EventSourcingDbAutoConfigurationTest {
 
             assertThrows(IllegalStateException.class, client::ping);
         });
+    }
+
+    // A server socket that is never accepted from still lets the client
+    // connect, since the operating system accepts the connection, but it never
+    // answers, so the request stalls.
+    @Test
+    @Timeout(10)
+    void createsAClientWithTheStallTimeoutOfTheProperties() throws IOException {
+        try (var socket = new ServerSocket(0)) {
+            contextRunner
+                    .withPropertyValues(
+                            "eventsourcingdb.base-url=http://localhost:" + socket.getLocalPort(),
+                            "eventsourcingdb.api-token=secret",
+                            "eventsourcingdb.stall-timeout=300ms")
+                    .run(context -> {
+                        var exception = assertThrows(
+                                ConnectionStalledException.class,
+                                () -> context.getBean(Client.class).ping());
+
+                        assertEquals(
+                                "failed to ping, nothing arrived from the server for 300 milliseconds",
+                                exception.getMessage());
+                    });
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"0s", "-1s"})
+    void failsToStartWithAStallTimeoutThatIsNotPositive(String stallTimeout) {
+        contextRunner
+                .withPropertyValues(connectionProperties())
+                .withPropertyValues("eventsourcingdb.stall-timeout=" + stallTimeout)
+                .run(context -> assertEquals(
+                        "stall timeout must be positive",
+                        rootCause(context.getStartupFailure()).getMessage()));
     }
 
     @Test
