@@ -29,8 +29,10 @@ import tools.jackson.databind.node.ObjectNode;
  * in a way that leaves open whether it was stored throws an {@link OutcomeUnknownException}.
  *
  * <p>To abort a request, interrupt the thread that makes it. The request then ends with a
- * {@link java.util.concurrent.CancellationException}. If the thread is interrupted before the request is sent, the
- * request is not sent at all.
+ * {@link java.util.concurrent.CancellationException}. If the thread is interrupted before the client starts to send
+ * the request, the request is not sent at all. Once the client has started to send a write, even if it is still
+ * connecting to the server, the write ends with an {@link OutcomeUnknownException} instead, whose cause is the
+ * {@link java.util.concurrent.CancellationException}.
  *
  * <p>The methods that read a stream return a {@link Stream}, which sends its request only once you start to consume
  * it, and which holds a connection to the server until it ends. Close it once you are done, e.g. using a
@@ -134,9 +136,10 @@ public final class Client implements AutoCloseable {
     /**
      * Writes the given events, provided that all preconditions hold. The events are written all or nothing.
      *
-     * <p>If writing fails after the request was sent, e.g. because the connection stalls, or because the thread is
-     * interrupted, the server may have written the events nevertheless, so writing ends with an
-     * {@link OutcomeUnknownException}, whose cause tells what failed.
+     * <p>If writing fails once the client has started to send the request, e.g. because the connection stalls, or
+     * because the thread is interrupted, even while the client is still connecting to the server, the server may have
+     * written the events nevertheless, so writing ends with an {@link OutcomeUnknownException}, whose cause tells what
+     * failed.
      *
      * @param events the events to write
      * @param preconditions the preconditions that must hold, e.g. an {@link IsSubjectPristinePrecondition}

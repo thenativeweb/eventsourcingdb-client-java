@@ -225,7 +225,7 @@ try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
 }
 ```
 
-If the thread is interrupted before the request is sent, no events are written, and writing ends with a `CancellationException`. If it is interrupted later, the server may have written them nevertheless, so writing ends with an `OutcomeUnknownException`, whose cause is the `CancellationException`. For details, see [Knowing Whether a Write Was Stored](#knowing-whether-a-write-was-stored).
+If the thread is interrupted before the client starts to send the request, no events are written, and writing ends with a `CancellationException`. If it is interrupted later, even while the client is still connecting to the server, the server may have written them nevertheless, so writing ends with an `OutcomeUnknownException`, whose cause is the `CancellationException`. For details, see [Knowing Whether a Write Was Stored](#knowing-whether-a-write-was-stored).
 
 ### Reading Events
 
@@ -747,7 +747,7 @@ If the server ends a stream before it is complete, e.g. because of a failure it 
 
 #### Knowing Whether a Write Was Stored
 
-The server never stops a write halfway, so a write whose answer is lost may have been stored nevertheless. If writing events or registering an event schema fails in a way that leaves open whether it was stored, the client throws an `OutcomeUnknownException`, whose cause tells what failed, e.g. a `ConnectionStalledException`, a broken connection, a `CancellationException` if the thread was interrupted after the request was sent, or a `DbApiException` with status `500`. Find out whether the write was stored, e.g. by reading the events of the subject, before you write it again:
+The server never stops a write halfway, so a write whose answer is lost may have been stored nevertheless. If writing events or registering an event schema fails in a way that leaves open whether it was stored, the client throws an `OutcomeUnknownException`, whose cause tells what failed, e.g. a `ConnectionStalledException`, a broken connection, a `CancellationException` if the thread was interrupted once the client had started to send the request, or a `DbApiException` with status `500`. Find out whether the write was stored, e.g. by reading the events of the subject, before you write it again:
 
 ```java
 try {
@@ -982,7 +982,7 @@ An error that the server reports within a stream is a `DbApiException` with the 
 } catch (ConnectionStalledException ex) {
 ```
 
-Writing events and registering an event schema throw an `OutcomeUnknownException` if they fail in a way that leaves open whether the server stored the write, e.g. after a stall, a broken connection, or a `500`. Its cause is the failure that the methods threw before. A write whose thread is interrupted after the request was sent throws it, too, with the `CancellationException` as its cause:
+Writing events and registering an event schema throw an `OutcomeUnknownException` if they fail in a way that leaves open whether the server stored the write, e.g. after a stall, a broken connection, or a `500`. Its cause is the failure that the methods threw before. A write whose thread is interrupted once the client has started to send the request throws it, too, even while the client is still connecting, with the `CancellationException` as its cause:
 
 ```java
 // Before
