@@ -469,6 +469,12 @@ class ContainerTest {
             assertEquals(1, labels.size());
             assertEquals(List.of(), existing(labels));
         } finally {
+            // The test creates the late container itself, so it waits for it
+            // before it cleans up, even if an assertion failed earlier.
+            lateContainerId
+                    .orTimeout(30, TimeUnit.SECONDS)
+                    .exceptionally(error -> "")
+                    .join();
             remove(labels);
         }
     }
