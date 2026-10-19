@@ -134,8 +134,8 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
         InputStream body;
         try {
             throwIfClosed();
-            var chosen = TransportChooser.await(action, transport);
-            spec = specs.apply(chosen);
+            var choice = TransportChooser.await(action, transport);
+            spec = specs.apply(choice.transport());
 
             var response = requests.sendForStream(spec.request());
             pending = response;
@@ -143,7 +143,7 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
                 body = Http.await(action, response, requests.stallTimeout(), spec.codes())
                         .body();
             } catch (RuntimeException ex) {
-                transports.forgetIfTheV2ApiIsMissing(chosen, ex);
+                transports.forgetIfTheV2ApiIsMissing(choice, ex);
                 throw ex;
             }
         } catch (RuntimeException ex) {

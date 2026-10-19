@@ -658,4 +658,50 @@ class ProbeTest {
             assertEquals("/api/v1/verify-api-token", server.paths().getLast());
         }
     }
+
+    // A request through the v2 API that was sent before the server was rolled
+    // back may be answered with 404 only once a new probe found out the v2 API
+    // again, e.g. because the server was rolled forward meanwhile. That 404
+    // belongs to the answer that the request was sent under, so the answer of
+    // the new probe is kept.
+    @Test
+    void aLate404LeavesTheV2ApiThatANewProbeFoundOutAlone() throws InterruptedException {
+        var late = new Gate();
+        var v2RequestCount = new AtomicInteger();
+        var tokenVerified = ApiVersion.V2.item("event", "{\"type\":\"io.eventsourcingdb.api.token-verified\"}");
+
+        ProbedServer.Answer others = (exchange, fakeServer) -> {
+            var index = v2RequestCount.getAndIncrement();
+            if (index == 0) {
+                late.pass();
+            }
+            if (index < 2) {
+                status(404).answer(exchange, fakeServer);
+                return;
+            }
+
+            FakeServer.respond(exchange, 200, tokenVerified);
+        };
+
+        try (var server = new ProbedServer(others, List.of(V2))) {
+            // The client's own stall timeout leaves the gate all the time it
+            // needs.
+            var client = new Client(server.server.url(), "secret");
+            var outcomes = new ConcurrentHashMap<String, Optional<Throwable>>();
+
+            var lateRequest = start("late", client::verifyApiToken, outcomes);
+            late.awaitReached();
+            assertThrows(DbApiException.class, client::verifyApiToken);
+            assertDoesNotThrow(client::verifyApiToken);
+
+            late.open();
+            lateRequest.join();
+            assertDoesNotThrow(client::verifyApiToken);
+
+            var exception =
+                    assertInstanceOf(DbApiException.class, outcomes.get("late").orElseThrow());
+            assertEquals(404, exception.status());
+            assertEquals(2, server.probeCount());
+        }
+    }
 }

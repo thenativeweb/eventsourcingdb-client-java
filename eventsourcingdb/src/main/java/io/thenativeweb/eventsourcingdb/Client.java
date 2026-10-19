@@ -111,12 +111,12 @@ public final class Client implements AutoCloseable {
     // longer.
     private <T extends @Nullable Object> T send(String action, Function<Transport, T> request) {
         Http.throwIfInterrupted(action);
-        var transport = TransportChooser.await(action, transports.transport());
+        var choice = TransportChooser.await(action, transports.transport());
 
         try {
-            return request.apply(transport);
+            return request.apply(choice.transport());
         } catch (RuntimeException ex) {
-            transports.forgetIfTheV2ApiIsMissing(transport, ex);
+            transports.forgetIfTheV2ApiIsMissing(choice, ex);
             throw ex;
         }
     }

@@ -38,8 +38,16 @@ final class TransportChooser {
     private final V2Transport v2;
 
     private final Object lock = new Object();
-    private @Nullable Transport chosen;
-    private @Nullable CompletableFuture<Transport> probe;
+    private @Nullable Choice chosen;
+    private @Nullable CompletableFuture<Choice> probe;
+    private long generation;
+
+    // A choice is the transport that a probe found out, along with the
+    // generation of that answer, which counts the answers that probes stored.
+    // The generation tells an answer apart from a later one that names the
+    // same transport, so that a request can tell which answer it was sent
+    // under.
+    record Choice(Transport transport, long generation) {}
 
     TransportChooser(Requests requests, V1Transport v1, V2Transport v2) {
         this.requests = requests;
@@ -47,10 +55,11 @@ final class TransportChooser {
         this.v2 = v2;
     }
 
-    // Returns the transport, once the server has told which API it offers.
-    // The future is the caller's own, so that canceling it ends only the wait
-    // of the caller, not the probe, which other requests may wait for, too.
-    CompletableFuture<Transport> transport() {
+    // Returns the choice of the transport, once the server has told which API
+    // it offers. The future is the caller's own, so that canceling it ends
+    // only the wait of the caller, not the probe, which other requests may
+    // wait for, too.
+    CompletableFuture<Choice> transport() {
         synchronized (lock) {
             var chosen = this.chosen;
             if (chosen != null) {
@@ -69,7 +78,8 @@ final class TransportChooser {
     @Nullable
     Transport chosen() {
         synchronized (lock) {
-            return chosen;
+            var chosen = this.chosen;
+            return chosen != null ? chosen.transport() : null;
         }
     }
 
@@ -83,18 +93,21 @@ final class TransportChooser {
     // exist, and an error that the v2 API reports in its answer has the status
     // code 200, so neither tells anything about the API.
     //
-    // Only a remembered v2 API is forgotten, so that a request answered late
-    // leaves alone the probe that another one started meanwhile, which other
-    // requests may wait for, and the v1 API that such a probe found out.
-    void forgetIfTheV2ApiIsMissing(Transport transport, RuntimeException failure) {
+    // Only the answer that the request was sent under is forgotten, which
+    // its generation tells, so that a request answered late leaves alone the
+    // probe that another one started meanwhile, which other requests may wait
+    // for, and the answer that such a probe stored, even if it is the v2 API
+    // again.
+    void forgetIfTheV2ApiIsMissing(Choice choice, RuntimeException failure) {
         var answer = failure instanceof OutcomeUnknownException ? failure.getCause() : failure;
-        if (transport != v2 || !isAnsweredWithoutTheV2Api(answer)) {
+        if (choice.transport() != v2 || !isAnsweredWithoutTheV2Api(answer)) {
             return;
         }
 
         synchronized (lock) {
-            if (chosen == v2) {
-                chosen = null;
+            var chosen = this.chosen;
+            if (chosen != null && chosen.generation() == choice.generation()) {
+                this.chosen = null;
             }
         }
     }
@@ -121,7 +134,7 @@ final class TransportChooser {
     // Waits for the transport. A failed probe fails the request with an
     // exception of its own, so that each request that waited for the probe
     // names its own action.
-    static Transport await(String action, CompletableFuture<Transport> transport) {
+    static Choice await(String action, CompletableFuture<Choice> transport) {
         try {
             return transport.get();
         } catch (InterruptedException ex) {
@@ -137,7 +150,7 @@ final class TransportChooser {
 
     // The answer to the probe is small, so the stall timeout bounds the probe
     // as a whole, which spares it a reader of its own.
-    private CompletableFuture<Transport> startProbe() {
+    private CompletableFuture<Choice> startProbe() {
         var response = requests.sendAsync(requests.get(PROBE_PATH), HttpResponse.BodyHandlers.ofString());
 
         var stallTimeout = requests.stallTimeout();
@@ -147,7 +160,7 @@ final class TransportChooser {
             response.cancel(true);
         });
 
-        var result = new CompletableFuture<Transport>();
+        var result = new CompletableFuture<Choice>();
         probe = result;
         response.whenComplete((answer, failure) -> {
             stallTimer.cancel(false);
@@ -157,12 +170,13 @@ final class TransportChooser {
         return result;
     }
 
-    // Keeps the transport that the probe found out, or forgets the probe if
-    // it failed, so that the next request probes again. Either way, a probe
-    // is running no longer. A probe starts only while no other is running, so
-    // the probe that completes is the one that is kept.
+    // Keeps the transport that the probe found out, as an answer of a
+    // generation of its own, or forgets the probe if it failed, so that the
+    // next request probes again. Either way, a probe is running no longer. A
+    // probe starts only while no other is running, so the probe that
+    // completes is the one that is kept.
     private void complete(
-            CompletableFuture<Transport> result,
+            CompletableFuture<Choice> result,
             @Nullable HttpResponse<String> answer,
             @Nullable Throwable failure,
             boolean hasStalled) {
@@ -177,11 +191,14 @@ final class TransportChooser {
             return;
         }
 
+        Choice choice;
         synchronized (lock) {
-            chosen = transport;
+            generation++;
+            choice = new Choice(transport, generation);
+            chosen = choice;
             probe = null;
         }
-        result.complete(transport);
+        result.complete(choice);
     }
 
     private Transport interpret(
