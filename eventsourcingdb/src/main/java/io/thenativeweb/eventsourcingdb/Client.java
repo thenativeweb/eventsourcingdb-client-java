@@ -1,17 +1,10 @@
 package io.thenativeweb.eventsourcingdb;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
@@ -22,37 +15,37 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * A client for an EventSourcingDB instance.
  *
- * <p>Every method that sends a request throws a {@link DbApiException} if the server answers with an unexpected HTTP
- * status code, and an {@link InvalidServerHeaderException} if the server is not an EventSourcingDB. If a request fails
- * on its way, e.g. because the server can not be reached, the method throws an {@link EventSourcingDbException}. If
- * nothing arrives from the server for the stall timeout, 30 seconds by default, it throws a
- * {@link ConnectionStalledException}; see {@link ClientOptions#withStallTimeout(Duration)}.
+ * <p>The client talks to every supported version of EventSourcingDB, whether it offers the v2 API or not. Creating a
+ * client sends no request. The first request of a client asks the server whether it offers the v2 API, and the client
+ * uses the v2 API from then on if it does, and the v1 API otherwise. If asking fails, e.g. because the server can not
+ * be reached, that first request fails, and the next request asks again. The v2 API reads with the HTTP method
+ * {@code QUERY}, so a proxy in front of the database has to let it through.
+ *
+ * <p>Every method that sends a request throws a {@link DbApiException} if the server reports an error, e.g. a
+ * precondition that does not hold, and an {@link InvalidServerHeaderException} if the server is not an
+ * EventSourcingDB. If a request fails on its way, e.g. because the server can not be reached, the method throws an
+ * {@link EventSourcingDbException}. If nothing arrives from the server for the stall timeout, 30 seconds by default, it
+ * throws a {@link ConnectionStalledException}; see {@link ClientOptions#withStallTimeout(Duration)}. A write that fails
+ * in a way that leaves open whether it was stored throws an {@link OutcomeUnknownException}.
  *
  * <p>To abort a request, interrupt the thread that makes it. The request then ends with a
- * {@link java.util.concurrent.CancellationException}. If the thread is interrupted before the request is sent, the
- * request is not sent at all.
+ * {@link java.util.concurrent.CancellationException}. If the thread is interrupted before the client starts to send
+ * the request, the request is not sent at all. Once the client has started to send a write, even if it is still
+ * connecting to the server, the write ends with an {@link OutcomeUnknownException} instead, whose cause is the
+ * {@link java.util.concurrent.CancellationException}.
  *
  * <p>The methods that read a stream return a {@link Stream}, which sends its request only once you start to consume
  * it, and which holds a connection to the server until it ends. Close it once you are done, e.g. using a
  * {@code try}-with-resources statement. To abort a stream from somewhere else, e.g. from another thread, close it. It
  * then ends with a {@link java.util.concurrent.CancellationException}, so that an aborted read can be told apart from a
- * complete one.
+ * complete one. A stream that the server ends before it is complete ends with an {@link EventSourcingDbException}.
  *
  * <p>A client is safe to use from multiple threads.
  */
 public final class Client implements AutoCloseable {
-    private final URI baseUrl;
-    private final String apiToken;
-    private final Duration stallTimeout;
-    private final HttpClient httpClient;
-    private final boolean isHttpClientOwned;
     private final JsonMapper dataMapper;
-
-    // What close() needs to end what the client is doing.
-    private final Object lock = new Object();
-    private final Set<Runnable> openRequests = ConcurrentHashMap.newKeySet();
-    private final Set<LineStream<?>> openStreams = ConcurrentHashMap.newKeySet();
-    private volatile boolean isClosed;
+    private final Requests requests;
+    private final TransportChooser transports;
 
     /**
      * Creates a client for the EventSourcingDB instance at the given URL.
@@ -72,26 +65,53 @@ public final class Client implements AutoCloseable {
      * @param options the options, e.g. the HTTP client to send requests with
      */
     public Client(URI baseUrl, String apiToken, ClientOptions options) {
-        this.baseUrl = baseUrl;
-        this.apiToken = apiToken;
-        stallTimeout = options.stallTimeout();
+        this(baseUrl, apiToken, options, WriteRetries.OF_THE_JDK);
+    }
 
+    // Lets tests tell whether the JDK sends writes again.
+    Client(URI baseUrl, String apiToken, ClientOptions options, WriteRetries writeRetries) {
         // The HTTP client of the client's own has no timeouts: the stall
         // timeout bounds every request, from connecting to the end of its
         // response. A timeout for whole requests would end every stream that
         // observes events, and a connect timeout would end a request sooner
         // than the stall timeout says.
         var givenHttpClient = options.httpClient();
-        httpClient = givenHttpClient != null ? givenHttpClient : HttpClient.newHttpClient();
-        isHttpClientOwned = givenHttpClient == null;
+        var httpClient = givenHttpClient != null ? givenHttpClient : HttpClient.newHttpClient();
+        requests = new Requests(
+                baseUrl, apiToken, options.stallTimeout(), httpClient, givenHttpClient == null, writeRetries);
+
+        // The JDK reads whether it sends writes again with the first request
+        // of any HTTP client, so the client reads it before it sends one, too,
+        // and keeps it, should it be cleared afterwards.
+        writeRetries.areEnabled();
 
         var givenDataMapper = options.dataMapper();
         dataMapper = givenDataMapper != null ? givenDataMapper : Json.MAPPER;
+
+        transports = new TransportChooser(
+                requests, new V1Transport(requests, dataMapper), new V2Transport(requests, dataMapper));
     }
 
     // Lets tests inspect the HTTP client that requests are sent with.
     HttpClient httpClient() {
-        return httpClient;
+        return requests.httpClient();
+    }
+
+    // Lets tests tell which API the client chose, if it has chosen one yet.
+    @Nullable
+    Transport chosenTransport() {
+        return transports.chosen();
+    }
+
+    // Learns which API the server offers, which only the first request of a
+    // client asks the server for.
+    private Transport transport(String action) {
+        Http.throwIfInterrupted(action);
+        return TransportChooser.await(action, transports.transport());
+    }
+
+    private <T> Stream<T> stream(String action, Function<Transport, StreamSpec<T>> specs) {
+        return LineStream.of(action, requests, transports, specs);
     }
 
     /**
@@ -101,31 +121,17 @@ public final class Client implements AutoCloseable {
      * @throws EventSourcingDbException if the instance is not reachable, or does not confirm the ping
      */
     public void ping() {
-        var request =
-                HttpRequest.newBuilder(baseUrl.resolve("/api/v1/ping")).GET().build();
-
-        var result = Json.MAPPER.readTree(request("ping", request));
-        if (!"io.eventsourcingdb.api.ping-received".equals(result.path("type").asString())) {
-            throw new EventSourcingDbException("failed to ping");
-        }
+        transport("ping").ping();
     }
 
     /**
      * Verifies the API token.
      *
-     * @throws DbApiException with status code 401 if the API token is invalid
+     * @throws DbApiException with status 401 if the API token is invalid
      * @throws EventSourcingDbException if the instance does not confirm the API token
      */
     public void verifyApiToken() {
-        var request = authorized("/api/v1/verify-api-token")
-                .POST(HttpRequest.BodyPublishers.noBody())
-                .build();
-
-        var result = Json.MAPPER.readTree(request("verify API token", request));
-        if (!"io.eventsourcingdb.api.api-token-verified"
-                .equals(result.path("type").asString())) {
-            throw new EventSourcingDbException("failed to verify API token");
-        }
+        transport("verify API token").verifyApiToken();
     }
 
     /**
@@ -141,14 +147,17 @@ public final class Client implements AutoCloseable {
     /**
      * Writes the given events, provided that all preconditions hold. The events are written all or nothing.
      *
-     * <p>If the thread is interrupted after the request was sent, the server may have written the events nevertheless,
-     * so the {@link java.util.concurrent.CancellationException} does not tell whether they were written.
+     * <p>If writing fails once the client has started to send the request, e.g. because the connection stalls, or
+     * because the thread is interrupted, even while the client is still connecting to the server, the server may have
+     * written the events nevertheless, so writing ends with an {@link OutcomeUnknownException}, whose cause tells what
+     * failed.
      *
      * @param events the events to write
      * @param preconditions the preconditions that must hold, e.g. an {@link IsSubjectPristinePrecondition}
      * @return the written events, including the fields the server adds, such as their IDs
-     * @throws DbApiException with status code 409 if a precondition does not hold, or if an event does not match the
-     *     schema of its type, in which case the reason tells which
+     * @throws DbApiException with the code {@link ErrorCode#PRECONDITION_VIOLATED} if a precondition does not hold, or
+     *     {@link ErrorCode#EVENT_SCHEMA_VIOLATED} if an event does not match the schema of its type
+     * @throws OutcomeUnknownException if writing failed in a way that leaves open whether the events were written
      */
     public List<Event> writeEvents(List<EventCandidate> events, List<Precondition> preconditions) {
         var body = Json.MAPPER.createObjectNode();
@@ -176,11 +185,7 @@ public final class Client implements AutoCloseable {
             }
         }
 
-        var response = request("write events", post("/api/v1/write-events", body));
-
-        return RawJson.readArray(response, "data").stream()
-                .map(cloudEvent -> Event.from(cloudEvent.tree(), cloudEvent.raw(), dataMapper))
-                .toList();
+        return transport("write events").writeEvents(body);
     }
 
     private static Map<String, Object> toRequest(Precondition precondition) {
@@ -233,7 +238,7 @@ public final class Client implements AutoCloseable {
                     toRequest(fromLatestEvent.subject(), fromLatestEvent.type(), fromLatestEvent.ifEventIsMissing()));
         }
 
-        return stream("read events", post("/api/v1/read-events", body), "event", this::parseEvent, false);
+        return stream("read events", transport -> transport.readEvents(body));
     }
 
     /**
@@ -243,8 +248,11 @@ public final class Client implements AutoCloseable {
      *
      * <p>While there are no new events, the server sends a heartbeat every second. If neither an event nor a heartbeat
      * arrives for the stall timeout, 30 seconds by default, e.g. because a proxy keeps the connection open but no longer
-     * passes anything on, the stream ends with a {@link HeartbeatTimeoutException}, and the client closes the
+     * passes anything on, the stream ends with a {@link ConnectionStalledException}, and the client closes the
      * connection. The time you spend on an event does not count.
+     *
+     * <p>The server ends the stream itself only after a failure it can not report within the stream, so the stream then
+     * ends with an {@link EventSourcingDbException}.
      *
      * @param subject the subject to observe the events of, e.g. {@code /books/42}, or {@code /} to observe all events, if
      *     the options make observing recursive
@@ -267,7 +275,7 @@ public final class Client implements AutoCloseable {
                     toRequest(fromLatestEvent.subject(), fromLatestEvent.type(), fromLatestEvent.ifEventIsMissing()));
         }
 
-        return stream("observe events", post("/api/v1/observe-events", body), "event", this::parseEvent, true);
+        return stream("observe events", transport -> transport.observeEvents(body));
     }
 
     private static ObjectNode toRequest(Bound bound) {
@@ -290,14 +298,14 @@ public final class Client implements AutoCloseable {
      *
      * <p>While the query runs, the server sends a heartbeat every second whenever there is no row to send. If neither a
      * row nor a heartbeat arrives for the stall timeout, 30 seconds by default, the stream ends with a
-     * {@link HeartbeatTimeoutException}, and the client closes the connection. The time you spend on a row does not
+     * {@link ConnectionStalledException}, and the client closes the connection. The time you spend on a row does not
      * count.
      *
      * @param query the query, e.g. {@code FROM e IN events PROJECT INTO e}
      * @return a stream of the rows, each of which matches the projection of the query
      */
     public Stream<JsonNode> runEventQlQuery(String query) {
-        return runEventQlQuery(query, (payload, rawData) -> payload);
+        return runEventQlQuery(query, row -> row);
     }
 
     /**
@@ -313,33 +321,27 @@ public final class Client implements AutoCloseable {
      * @return a stream of the rows
      */
     public <T> Stream<T> runEventQlQuery(String query, Class<T> rowType) {
-        return runEventQlQuery(query, (payload, rawData) -> dataMapper.treeToValue(payload, rowType));
+        return runEventQlQuery(query, row -> dataMapper.treeToValue(row, rowType));
     }
 
-    private <T> Stream<T> runEventQlQuery(String query, LineStream.Parser<T> parser) {
-        var body = Json.MAPPER.createObjectNode();
-        body.put("query", query);
-
-        return stream("run EventQL query", post("/api/v1/run-eventql-query", body), "row", parser, true);
+    private <T> Stream<T> runEventQlQuery(String query, Function<JsonNode, T> rowParser) {
+        return stream("run EventQL query", transport -> transport.runEventQlQuery(query, rowParser));
     }
 
     /**
-     * Lists the subjects within the given base subject. The list includes the base subject itself, unless there are no
-     * events within it.
+     * Reads the subjects, i.e. the subjects that events were written to, and the subjects they are nested in.
      *
-     * @param baseSubject the subject to list the subjects within, e.g. {@code /} for all subjects
+     * <p>Read recursively, the stream holds the subject itself, and every subject nested in it, e.g. {@code /books} and
+     * {@code /books/42} for {@code /books}. Read not recursively, it holds the subject alone. Either way, it holds a
+     * subject only if there are events within it, so it is empty for a subject that has no events, and none nested.
+     *
+     * @param subject the subject to read, e.g. {@code /books}, or {@code /} to read all subjects, if the options make
+     *     the read recursive
+     * @param options the options, i.e. whether to read the subjects nested in the subject, too
      * @return a stream of the subjects
      */
-    public Stream<String> readSubjects(String baseSubject) {
-        var body = Json.MAPPER.createObjectNode();
-        body.put("baseSubject", baseSubject);
-
-        return stream(
-                "read subjects",
-                post("/api/v1/read-subjects", body),
-                "subject",
-                (payload, rawData) -> payload.path("subject").asString(),
-                false);
+    public Stream<String> readSubjects(String subject, ReadSubjectsOptions options) {
+        return stream("read subjects", transport -> transport.readSubjects(subject, options.recursive()));
     }
 
     /**
@@ -349,12 +351,7 @@ public final class Client implements AutoCloseable {
      * @return a stream of the event types
      */
     public Stream<EventType> readEventTypes() {
-        return stream(
-                "read event types",
-                post("/api/v1/read-event-types", Json.MAPPER.createObjectNode()),
-                "eventType",
-                (payload, rawData) -> EventType.from(payload),
-                false);
+        return stream("read event types", Transport::readEventTypes);
     }
 
     /**
@@ -362,14 +359,10 @@ public final class Client implements AutoCloseable {
      *
      * @param eventType the event type, e.g. {@code io.eventsourcingdb.library.book-acquired}
      * @return the event type
-     * @throws DbApiException with status code 404 if the event type does not exist, or 400 if it is malformed
+     * @throws DbApiException with the code {@link ErrorCode#EVENT_TYPE_UNKNOWN} if the event type does not exist
      */
     public EventType readEventType(String eventType) {
-        var body = Json.MAPPER.createObjectNode();
-        body.put("eventType", eventType);
-
-        var response = request("read event type", post("/api/v1/read-event-type", body));
-        return EventType.from(Json.MAPPER.readTree(response));
+        return transport("read event type").readEventType(eventType);
     }
 
     /**
@@ -378,92 +371,21 @@ public final class Client implements AutoCloseable {
      *
      * @param eventType the event type, e.g. {@code io.eventsourcingdb.library.book-acquired}
      * @param schema the JSON schema, e.g. as nested maps and lists
-     * @throws DbApiException with status code 409 if a schema is already registered for the event type
+     * @throws DbApiException with the code {@link ErrorCode#EVENT_SCHEMA_ALREADY_REGISTERED} if a schema is already
+     *     registered for the event type
+     * @throws OutcomeUnknownException if registering failed in a way that leaves open whether the schema was
+     *     registered, e.g. because the connection stalled after the request was sent
      */
     public void registerEventSchema(String eventType, Map<String, ?> schema) {
-        var body = Json.MAPPER.createObjectNode();
-        body.put("eventType", eventType);
-        body.set("schema", Json.MAPPER.valueToTree(schema));
-
-        request("register event schema", post("/api/v1/register-event-schema", body));
-    }
-
-    private HttpRequest post(String path, JsonNode body) {
-        return authorized(path)
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(Json.MAPPER.writeValueAsString(body)))
-                .build();
-    }
-
-    private HttpRequest.Builder authorized(String path) {
-        return HttpRequest.newBuilder(baseUrl.resolve(path)).header("Authorization", "Bearer " + apiToken);
-    }
-
-    // Sends a request and returns the body of its response. The request is
-    // sent under the same lock under which close() marks the client as
-    // closed, so that close() either sees the request and ends it, or the
-    // request sees that the client is closed and is not sent at all.
-    private String request(String action, HttpRequest request) {
-        Http.throwIfInterrupted(action);
-
-        CompletableFuture<HttpResponse<InputStream>> response;
-        Runnable abortion;
-        synchronized (lock) {
-            throwIfClosed();
-
-            response = httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream());
-            abortion = () -> Http.abort(response);
-            openRequests.add(abortion);
-        }
-
-        try {
-            return Http.readBody(action, Http.await(action, response, stallTimeout), stallTimeout);
-        } catch (RuntimeException ex) {
-            if (isClosed) {
-                throw Http.cancellation(action, ex);
-            }
-            throw ex;
-        } finally {
-            openRequests.remove(abortion);
-        }
-    }
-
-    private void throwIfClosed() {
-        if (isClosed) {
-            throw new IllegalStateException("client is closed");
-        }
-    }
-
-    private <T> Stream<T> stream(
-            String action, HttpRequest request, String itemType, LineStream.Parser<T> parser, boolean hasHeartbeats) {
-        // On a stream with heartbeats, a stall means that the heartbeats
-        // stopped, which HeartbeatTimeoutException reports.
-        Function<IOException, RuntimeException> stall = hasHeartbeats
-                ? ex -> new HeartbeatTimeoutException(stallTimeout)
-                : ex -> new ConnectionStalledException(action, stallTimeout, ex);
-
-        synchronized (lock) {
-            throwIfClosed();
-
-            return LineStream.of(
-                    action,
-                    () -> httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream()),
-                    itemType,
-                    parser,
-                    stallTimeout,
-                    stall,
-                    openStreams);
-        }
-    }
-
-    private Event parseEvent(JsonNode payload, @Nullable String rawData) {
-        return Event.from(payload, rawData, dataMapper);
+        var schemaNode = Json.MAPPER.valueToTree(schema);
+        transport("register event schema").registerEventSchema(eventType, schemaNode);
     }
 
     /**
      * Closes the client, and ends everything it is doing at once: requests that are running and streams that are open,
      * whether they have started or not, end with a {@link java.util.concurrent.CancellationException}, as if they had
-     * been aborted. Every request afterwards throws an {@link IllegalStateException} without being sent.
+     * been aborted, and so does a write that was sent, as the cause of an {@link OutcomeUnknownException}. Every
+     * request afterwards throws an {@link IllegalStateException} without being sent.
      *
      * <p>The client closes the HTTP client it created itself, but not one that was given to it with
      * {@link ClientOptions#withHttpClient(HttpClient)}, since that one belongs to the caller. Closing a client that is
@@ -471,18 +393,6 @@ public final class Client implements AutoCloseable {
      */
     @Override
     public void close() {
-        synchronized (lock) {
-            if (isClosed) {
-                return;
-            }
-            isClosed = true;
-        }
-
-        openRequests.forEach(Runnable::run);
-        openStreams.forEach(LineStream::close);
-
-        if (isHttpClientOwned) {
-            httpClient.shutdownNow();
-        }
+        requests.close();
     }
 }

@@ -13,9 +13,8 @@ import java.time.Duration;
  * that the JDK uses for a response that does not arrive in time. If the response stopped in the middle, the cause is
  * the {@link java.io.IOException} that ended reading it.
  *
- * <p>Once the stream of {@link Client#observeEvents(String, ObserveEventsOptions)} or
- * {@link Client#runEventQlQuery(String)} has started, a stall ends it with a {@link HeartbeatTimeoutException}
- * instead.
+ * <p>While there is nothing else to send, the server sends a heartbeat every second on its streams, which counts as
+ * something that arrived, so a stream that waits for events, e.g. one that observes them, is not cut off.
  */
 public final class ConnectionStalledException extends EventSourcingDbException {
     private static final long serialVersionUID = 1L;

@@ -17,7 +17,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 class ClientOptionsTest {
     private static FakeServer pingingServer() {
-        return FakeServer.respondingWith(200, "{\"type\":\"io.eventsourcingdb.api.ping-received\"}");
+        return FakeServer.respondingWith(ApiVersion.V1, 200, "{\"type\":\"io.eventsourcingdb.api.ping-received\"}");
     }
 
     // The stall timeout bounds connecting, too, so a connect timeout of the

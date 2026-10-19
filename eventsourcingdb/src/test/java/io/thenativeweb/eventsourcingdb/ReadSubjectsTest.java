@@ -24,8 +24,8 @@ class ReadSubjectsTest {
         container.stop();
     }
 
-    private List<String> readSubjects(String baseSubject) {
-        try (var subjects = client.readSubjects(baseSubject)) {
+    private List<String> readSubjects(String subject, boolean recursive) {
+        try (var subjects = client.readSubjects(subject, new ReadSubjectsOptions(recursive))) {
             return subjects.toList();
         }
     }
@@ -38,20 +38,45 @@ class ReadSubjectsTest {
 
     @Test
     void readsNoSubjectsIfTheDatabaseIsEmpty() {
-        assertEquals(List.of(), readSubjects("/"));
+        assertEquals(List.of(), readSubjects("/", true));
     }
 
     @Test
     void readsAllSubjects() {
         writeTwoEvents();
 
-        assertEquals(List.of("/", "/test", "/test/1", "/test/2"), readSubjects("/"));
+        assertEquals(List.of("/", "/test", "/test/1", "/test/2"), readSubjects("/", true));
     }
 
     @Test
-    void readsAllSubjectsFromTheBaseSubject() {
+    void readsAllSubjectsWithinTheSubject() {
         writeTwoEvents();
 
-        assertEquals(List.of("/test", "/test/1", "/test/2"), readSubjects("/test"));
+        assertEquals(List.of("/test", "/test/1", "/test/2"), readSubjects("/test", true));
+    }
+
+    @Test
+    void readsTheSubjectAloneIfItIsNotToReadRecursively() {
+        writeTwoEvents();
+
+        assertEquals(List.of("/test"), readSubjects("/test", false));
+        assertEquals(List.of("/test/1"), readSubjects("/test/1", false));
+    }
+
+    // The server names a subject without a slash at its end, e.g. /test for
+    // /test/, whichever API the client reads it through.
+    @Test
+    void readsTheSubjectAloneAsTheServerNamesIt() {
+        writeTwoEvents();
+
+        assertEquals(List.of("/test"), readSubjects("/test/", false));
+        assertEquals(List.of("/"), readSubjects("/", false));
+    }
+
+    @Test
+    void readsNoSubjectIfThereAreNoEventsWithinIt() {
+        writeTwoEvents();
+
+        assertEquals(List.of(), readSubjects("/other", false));
     }
 }

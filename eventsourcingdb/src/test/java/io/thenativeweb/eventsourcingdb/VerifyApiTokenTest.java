@@ -8,6 +8,8 @@ import io.thenativeweb.eventsourcingdb.testcontainers.Container;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 class VerifyApiTokenTest {
     private Container container;
@@ -34,12 +36,27 @@ class VerifyApiTokenTest {
         var client = new Client(container.getBaseUrl(), "invalid-token");
 
         var exception = assertThrows(DbApiException.class, client::verifyApiToken);
-        assertEquals(401, exception.statusCode());
+        assertEquals(401, exception.status());
     }
 
-    @Test
-    void throwsIfTheServerDoesNotConfirmTheToken() {
-        try (var server = FakeServer.respondingWith(200, "{\"type\":\"something-else\"}")) {
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void doesNotThrowIfTheServerConfirmsTheToken(ApiVersion api) {
+        var confirmation = api == ApiVersion.V1
+                ? "{\"type\":\"io.eventsourcingdb.api.api-token-verified\"}"
+                : api.item("event", "{\"type\":\"io.eventsourcingdb.api.token-verified\"}");
+
+        try (var server = FakeServer.respondingWith(api, 200, confirmation)) {
+            var client = new Client(server.url(), "secret");
+
+            assertDoesNotThrow(client::verifyApiToken);
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void throwsIfTheServerDoesNotConfirmTheToken(ApiVersion api) {
+        try (var server = FakeServer.respondingWith(api, 200, api.item("event", "{\"type\":\"something-else\"}"))) {
             var client = new Client(server.url(), "secret");
 
             var exception = assertThrows(EventSourcingDbException.class, client::verifyApiToken);

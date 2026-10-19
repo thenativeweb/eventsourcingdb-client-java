@@ -28,15 +28,19 @@ final class Http {
 
     // Waits for the server to answer with its headers, for the stall timeout
     // at most, which covers connecting and sending the request as well.
-    // Interrupting the waiting thread cancels the request.
+    // Interrupting the waiting thread cancels the request. A status code
+    // other than 200 ends it with a DbApiException, whose code codes tells.
     static HttpResponse<InputStream> await(
-            String action, CompletableFuture<HttpResponse<InputStream>> response, Duration stallTimeout) {
+            String action,
+            CompletableFuture<HttpResponse<InputStream>> response,
+            Duration stallTimeout,
+            CodeMapping codes) {
         try {
             // TimeUnit.convert saturates instead of overflowing, unlike
             // Duration.toNanos, so that a stall timeout of hundreds of years
             // still works.
             var stallTimeoutNanos = TimeUnit.NANOSECONDS.convert(stallTimeout);
-            return check(action, response.get(stallTimeoutNanos, TimeUnit.NANOSECONDS), stallTimeout);
+            return check(action, response.get(stallTimeoutNanos, TimeUnit.NANOSECONDS), stallTimeout, codes);
         } catch (InterruptedException ex) {
             response.cancel(true);
             Thread.currentThread().interrupt();
@@ -46,27 +50,39 @@ final class Http {
         } catch (TimeoutException ex) {
             abort(response);
 
-            // The stall timeout ends the wait before the JDK raises anything,
-            // so the stall carries the exception that the JDK uses for a
-            // response that does not arrive in time, which callers may check
-            // for, e.g. those who set timeouts on an HTTP client of their own.
-            var timeout =
-                    new HttpTimeoutException("nothing arrived from the server for " + Durations.describe(stallTimeout));
-            timeout.initCause(ex);
-            throw new ConnectionStalledException(action, stallTimeout, timeout);
+            throw new ConnectionStalledException(action, stallTimeout, timeout(stallTimeout, ex));
         }
     }
 
+    // The stall timeout ends the wait before the JDK raises anything, so the
+    // stall carries the exception that the JDK uses for a response that does
+    // not arrive in time, which callers may check for, e.g. those who set
+    // timeouts on an HTTP client of their own.
+    static HttpTimeoutException timeout(Duration stallTimeout, @Nullable Throwable cause) {
+        var timeout =
+                new HttpTimeoutException("nothing arrived from the server for " + Durations.describe(stallTimeout));
+        timeout.initCause(cause);
+        return timeout;
+    }
+
+    static boolean isFromEventSourcingDb(HttpResponse<?> response) {
+        return response.headers().firstValue("Server").orElse("").startsWith("EventSourcingDB/");
+    }
+
     private static HttpResponse<InputStream> check(
-            String action, HttpResponse<InputStream> response, Duration stallTimeout) {
-        var serverHeader = response.headers().firstValue("Server").orElse("");
-        if (!serverHeader.startsWith("EventSourcingDB/")) {
+            String action, HttpResponse<InputStream> response, Duration stallTimeout, CodeMapping codes) {
+        if (!isFromEventSourcingDb(response)) {
             close(response.body());
             throw new InvalidServerHeaderException();
         }
 
         if (response.statusCode() != 200) {
-            throw DbApiException.of(action, response.statusCode(), guard(action, response.body(), stallTimeout));
+            throw DbApiException.ofStatus(
+                    action,
+                    response.statusCode(),
+                    response.headers(),
+                    guard(action, response.body(), stallTimeout),
+                    codes);
         }
 
         return response;
@@ -100,6 +116,12 @@ final class Http {
         }
 
         return new EventSourcingDbException("failed to " + action, ex);
+    }
+
+    // A stream that ends before it is complete was aborted by the server, e.g.
+    // because of a failure it could not report within the stream.
+    static EventSourcingDbException endedUnexpectedly(String action) {
+        return new EventSourcingDbException("failed to " + action + ", the stream ended unexpectedly");
     }
 
     static CancellationException cancellation(String action, @Nullable Throwable cause) {

@@ -8,6 +8,8 @@ import io.thenativeweb.eventsourcingdb.testcontainers.Container;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 class PingTest {
     private Container container;
@@ -37,9 +39,10 @@ class PingTest {
         assertEquals("failed to ping", exception.getMessage());
     }
 
-    @Test
-    void throwsIfTheServerDoesNotConfirmThePing() {
-        try (var server = FakeServer.respondingWith(200, "{\"type\":\"something-else\"}")) {
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void throwsIfTheServerDoesNotConfirmThePing(ApiVersion api) {
+        try (var server = FakeServer.respondingWith(api, 200, api.item("event", "{\"type\":\"something-else\"}"))) {
             var client = new Client(server.url(), "secret");
 
             var exception = assertThrows(EventSourcingDbException.class, client::ping);

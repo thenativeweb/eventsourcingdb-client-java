@@ -45,8 +45,8 @@ class ReadEventTypesTest {
 
         assertEquals(
                 List.of(
-                        new EventType("io.eventsourcingdb.test.bar", false, Optional.empty()),
-                        new EventType("io.eventsourcingdb.test.foo", false, Optional.empty())),
+                        new EventType("io.eventsourcingdb.test.bar", true, Optional.empty()),
+                        new EventType("io.eventsourcingdb.test.foo", true, Optional.empty())),
                 readEventTypes());
     }
 
@@ -63,6 +63,6 @@ class ReadEventTypesTest {
                 false);
         client.registerEventSchema("io.eventsourcingdb.test", schema);
 
-        assertEquals(List.of(new EventType("io.eventsourcingdb.test", true, Optional.of(schema))), readEventTypes());
+        assertEquals(List.of(new EventType("io.eventsourcingdb.test", false, Optional.of(schema))), readEventTypes());
     }
 }

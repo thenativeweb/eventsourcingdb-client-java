@@ -62,6 +62,12 @@ client.verifyApiToken();
 
 *Note that all exceptions the client throws are unchecked. For details, see [Handling Errors](#handling-errors).*
 
+### Talking to Servers With and Without the v2 API
+
+The client works with servers that offer the v2 API, and with servers that do not, such as EventSourcingDB 1.2.0. Creating a client sends no request. The first request of a client asks the server whether it offers the v2 API, and the client remembers the answer: from then on, it uses the v2 API if the server offers it, and the v1 API otherwise. If asking fails, e.g. because the server can not be reached, the first request fails, and the next one asks again.
+
+The v2 API reads with the HTTP method `QUERY` ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)), which carries a body, as `POST` does, but changes nothing. If a proxy, a load balancer, or a firewall sits in front of the database, it has to let `QUERY` through. The client does not fall back to `POST`.
+
 ### Configuring the HTTP Client
 
 By default, the client creates an HTTP client of its own. If you need to configure what it does not, e.g. a shorter connect timeout, a proxy, or TLS, create a `java.net.http.HttpClient` yourself, and hand it over using `ClientOptions`:
@@ -86,8 +92,6 @@ A request fails once nothing arrives from the server for 30 seconds, e.g. becaus
 var client = new Client(baseUrl, apiToken, new ClientOptions()
   .withStallTimeout(Duration.ofSeconds(10)));
 ```
-
-*Note that [running EventQL queries](#running-eventql-queries) and [observing events](#observing-events) end with a `HeartbeatTimeoutException` instead, once their stream has started.*
 
 ### Configuring the Serialization of Event Data
 
@@ -221,7 +225,7 @@ try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
 }
 ```
 
-Writing then ends with a `CancellationException`. If the thread is interrupted before the request is sent, no events are written. If it is interrupted later, the server may have written them nevertheless, so the exception does not tell whether they were written.
+If the thread is interrupted before the client starts to send the request, no events are written, and writing ends with a `CancellationException`. If it is interrupted later, even while the client is still connecting to the server, the server may have written them nevertheless, so writing ends with an `OutcomeUnknownException`, whose cause is the `CancellationException`. For details, see [Knowing Whether a Write Was Stored](#knowing-whether-a-write-was-stored).
 
 ### Reading Events
 
@@ -395,7 +399,7 @@ The query then ends with a `CancellationException`, so that an aborted query can
 
 #### Detecting a Stalled Connection
 
-While a query runs, the server sends a heartbeat every second whenever there is no row to send. If neither a row nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, the query ends with a `HeartbeatTimeoutException`, and the client closes the connection:
+While a query runs, the server sends a heartbeat every second whenever there is no row to send. If neither a row nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, the query ends with a `ConnectionStalledException`, and the client closes the connection:
 
 ```java
 try (var rows = client.runEventQlQuery(
@@ -404,7 +408,7 @@ try (var rows = client.runEventQlQuery(
   rows.forEach(row -> {
     // ...
   });
-} catch (HeartbeatTimeoutException ex) {
+} catch (ConnectionStalledException ex) {
   // ...
 }
 ```
@@ -427,6 +431,8 @@ try (var events = client.observeEvents(
   });
 }
 ```
+
+Observing does not end on its own. If the server ends it nevertheless, which it does only after a failure it can not report within the stream, the stream ends with an `EventSourcingDbException`, so that you can observe again.
 
 #### Observing From Subjects Recursively
 
@@ -506,7 +512,7 @@ Observing then ends with a `CancellationException`. Since observing does not end
 
 #### Detecting a Stalled Connection
 
-While there are no new events, the server sends a heartbeat every second. If neither an event nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, observing ends with a `HeartbeatTimeoutException`, and the client closes the connection:
+While there are no new events, the server sends a heartbeat every second. If neither an event nor a heartbeat arrives for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because a proxy keeps the connection open but no longer passes anything on, observing ends with a `ConnectionStalledException`, and the client closes the connection:
 
 ```java
 try (var events = client.observeEvents(
@@ -516,7 +522,7 @@ try (var events = client.observeEvents(
   events.forEach(event -> {
     // ...
   });
-} catch (HeartbeatTimeoutException ex) {
+} catch (ConnectionStalledException ex) {
   // ...
 }
 ```
@@ -549,21 +555,38 @@ client.registerEventSchema(
 
 ### Listing Subjects
 
-To list all subjects, call the `readSubjects` method with `/` as the base subject. The method returns a `Stream`, which you should close once you are done:
+To list subjects, call the `readSubjects` method with a subject and an options object. Set the `recursive` option to `true` to list the subject and all subjects nested in it. To list all subjects, provide `/` as the subject. The method returns a `Stream`, which you should close once you are done:
 
 ```java
-try (var subjects = client.readSubjects("/")) {
+try (var subjects = client.readSubjects(
+  "/",
+  new ReadSubjectsOptions(true)
+)) {
   subjects.forEach(subject -> {
     // ...
   });
 }
 ```
 
-If you only want to list subjects within a specific branch, provide the desired base subject instead:
+If you only want to list subjects within a specific branch, provide the desired subject instead:
 
 ```java
-try (var subjects = client.readSubjects("/books")) {
+try (var subjects = client.readSubjects(
+  "/books",
+  new ReadSubjectsOptions(true)
+)) {
   // ...
+}
+```
+
+If you set the `recursive` option to `false`, the stream holds the subject alone, provided that there are events within it. This tells whether a subject exists:
+
+```java
+try (var subjects = client.readSubjects(
+  "/books/42",
+  new ReadSubjectsOptions(false)
+)) {
+  var exists = subjects.findAny().isPresent();
 }
 ```
 
@@ -574,7 +597,10 @@ If you need to abort listing, stop consuming the stream. However, this only work
 To abort listing independently of that, close the stream from somewhere else:
 
 ```java
-try (var subjects = client.readSubjects("/")) {
+try (var subjects = client.readSubjects(
+  "/",
+  new ReadSubjectsOptions(true)
+)) {
   // Somewhere else, close the stream, which will cause
   // reading to end.
   scheduler.schedule(subjects::close, 5, TimeUnit.SECONDS);
@@ -598,6 +624,8 @@ try (var eventTypes = client.readEventTypes()) {
   });
 }
 ```
+
+Each event type tells its name with `type`, whether events of the type were written with `hasEvents`, and the schema registered for it with `schema`, if there is one. An event type without events exists only because a schema is registered for it.
 
 #### Aborting Listing
 
@@ -655,7 +683,7 @@ event.verifySignature(verificationKey);
 
 All exceptions the client throws are unchecked. Those that come from the client itself extend `EventSourcingDbException`.
 
-If the server answers a request with an unexpected HTTP status code, the client throws a `DbApiException`. It contains the `statusCode` and the `reason` the server gives, so you can tell failures apart without parsing the error message:
+If the server reports an error, the client throws a `DbApiException`. It contains the `code` of the error, together with its `description`, its `details`, and the HTTP `status`, so you can tell failures apart without parsing the error message. The code is the URL of the page in the documentation that explains the error, e.g. `https://docs.eventsourcingdb.io/errors/precondition-violated`. Compare it with the constants of `ErrorCode`:
 
 ```java
 try {
@@ -668,12 +696,12 @@ try {
     )
   );
 } catch (DbApiException ex) {
-  switch (ex.statusCode()) {
-    case 409 -> {
-      // ex.reason() tells why, e.g. "state conflict: precondition failed".
-    }
-    case 401 -> {
+  switch (ex.code()) {
+    case ErrorCode.PRECONDITION_VIOLATED -> {
       // ...
+    }
+    case ErrorCode.EVENT_SCHEMA_VIOLATED -> {
+      // ex.description() tells why, and ex.details() which event.
     }
     default -> {
       // ...
@@ -682,7 +710,22 @@ try {
 }
 ```
 
-*Note that different failures may share a status code: a failed precondition and an event that does not match its schema are both answered with `409`, and only their reasons differ.*
+The server reports an error in one of two ways. If it accepts a request and the request fails nevertheless, e.g. because a precondition does not hold, the status is `200`, and the code names the error. If it refuses a request, e.g. because the API token is invalid, the status is the status code it answered with, e.g. `401`, and the code is empty.
+
+A server without the v2 API reports every error with a status code, e.g. a precondition that does not hold with `409`. For those errors that clearly match an error of the v2 API, the client sets the code of the v2 API nevertheless, so that you can handle them alike, whichever API the server offers.
+
+If the server refuses a request because the client sent too many, the status is `429`, and `retryAfter` tells how long the server asks you to wait before you send the request again, if it says so. The client does not repeat the request on its own:
+
+```java
+try {
+  client.ping();
+} catch (DbApiException ex) {
+  if (ex.status() == 429) {
+    var timeToWait = ex.retryAfter().orElse(Duration.ofSeconds(1));
+    // ...
+  }
+}
+```
 
 If the server is not an EventSourcingDB, e.g. because a proxy answers in its place, the client throws an `InvalidServerHeaderException`:
 
@@ -696,9 +739,31 @@ try {
 
 If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`, and if the hash of the event is of a version the client does not know, an `UnsupportedHashVersionException`. A signature that is not hexadecimal throws an `IllegalArgumentException` instead. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
 
-If a request receives nothing from the server for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and the request ends with a `ConnectionStalledException`. Once observing events or running an EventQL query has started, it ends with a `HeartbeatTimeoutException` instead, as nothing arriving there means that not even a heartbeat arrived.
+If a request receives nothing from the server for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and the request ends with a `ConnectionStalledException`.
 
 If a request is aborted, because its thread is interrupted, because its stream is closed from somewhere else, or because the client is closed, it ends with a `CancellationException`.
+
+If the server ends a stream before it is complete, e.g. because of a failure it can not report within the stream, the stream ends with an `EventSourcingDbException`. This includes observing events, which never ends on its own.
+
+#### Knowing Whether a Write Was Stored
+
+The server never stops a write halfway, so a write whose answer is lost may have been stored nevertheless. If writing events or registering an event schema fails in a way that leaves open whether it was stored, the client throws an `OutcomeUnknownException`, whose cause tells what failed, e.g. a `ConnectionStalledException`, a broken connection, a `CancellationException` if the thread was interrupted once the client had started to send the request, or a `DbApiException` with status `500`. Find out whether the write was stored, e.g. by reading the events of the subject, before you write it again:
+
+```java
+try {
+  client.writeEvents(
+    List.of(
+      // ...
+    )
+  );
+} catch (OutcomeUnknownException ex) {
+  // The events may have been written, so check before writing them again.
+}
+```
+
+A write that certainly was not stored throws the failure itself instead: an `EventSourcingDbException` if the client could not connect to the server at all, and a `DbApiException` if the server refused the write, e.g. because a precondition does not hold, or because the client sent too many requests.
+
+*Note that the networking property `jdk.httpclient.enableAllMethodRetry` of the JDK, set as a system property or in the `conf/net.properties` of the JDK, makes the JDK send a write again if the connection closes before the answer arrives, which can store the write twice. If it is set when a client is created, or when a write fails, the client can not tell a write that could not connect from one that was sent again, so from then on, it throws an `OutcomeUnknownException` for that, too.*
 
 ### Using Testcontainers
 
@@ -884,3 +949,77 @@ class BookServiceTest {
   // ...
 }
 ```
+
+## Upgrading From Version 1
+
+Version 2 talks to servers with and without the v2 API, as described in [Talking to Servers With and Without the v2 API](#talking-to-servers-with-and-without-the-v2-api), and follows the v2 API in its own API. These are the changes that may require changes to your code.
+
+`DbApiException` describes an error with its `code`, its `description`, its `details`, and its `status`. `statusCode()` is now `status()`, and `reason()` is now `description()`:
+
+```java
+// Before
+if (ex.statusCode() == 409) {
+  var reason = ex.reason();
+}
+
+// After
+if (ex.code().equals(ErrorCode.PRECONDITION_VIOLATED)) {
+  var description = ex.description();
+}
+```
+
+A server with the v2 API reports the errors of a request it accepted with the status `200` and a code, e.g. a precondition that does not hold, which a server without it reports with `409`. So tell errors apart by their `code` rather than by their `status`. For details, see [Handling Errors](#handling-errors).
+
+An error that the server reports within a stream is a `DbApiException` with the status `200`, instead of a plain `EventSourcingDbException`, which it extends. Code that catches `EventSourcingDbException` keeps working.
+
+`HeartbeatTimeoutException` is removed. Every stall ends with a `ConnectionStalledException`, also once observing events or running an EventQL query has started:
+
+```java
+// Before
+} catch (HeartbeatTimeoutException ex) {
+
+// After
+} catch (ConnectionStalledException ex) {
+```
+
+Writing events and registering an event schema throw an `OutcomeUnknownException` if they fail in a way that leaves open whether the server stored the write, e.g. after a stall, a broken connection, or a `500`. Its cause is the failure that the methods threw before. A write whose thread is interrupted once the client has started to send the request throws it, too, even while the client is still connecting, with the `CancellationException` as its cause:
+
+```java
+// Before
+} catch (CancellationException ex) {
+  // The events may have been written.
+}
+
+// After
+} catch (OutcomeUnknownException ex) {
+  // The events may have been written.
+}
+```
+
+For details, see [Knowing Whether a Write Was Stored](#knowing-whether-a-write-was-stored).
+
+`EventType` names the type `type`, and tells with `hasEvents` whether events of the type were written, which is the opposite of `isPhantom`:
+
+```java
+// Before
+var name = eventType.eventType();
+var isPhantom = eventType.isPhantom();
+
+// After
+var name = eventType.type();
+var hasEvents = eventType.hasEvents();
+```
+
+`readSubjects` takes the subject and options, whose `recursive` you have to set. Set it to `true` to read what `readSubjects` read before:
+
+```java
+// Before
+client.readSubjects("/books");
+
+// After
+client.readSubjects("/books", new ReadSubjectsOptions(true));
+```
+
+Observing events ends with an `EventSourcingDbException` if the server ends the stream without an error, which it does only after a failure it can not report within the stream. Before, observing ended as if it were complete.
+
+The v2 API reads with the HTTP method `QUERY`. If a proxy, a load balancer, or a firewall sits in front of the database, make sure that it lets `QUERY` through.

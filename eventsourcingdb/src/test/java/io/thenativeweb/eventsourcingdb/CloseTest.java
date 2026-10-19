@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.thenativeweb.eventsourcingdb.Operations.Operation;
+import java.io.IOException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -16,18 +17,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 // Closing a client ends what it is doing at once, as if each of its requests
 // and streams had been aborted, and the client can not be used afterwards.
 @Timeout(10)
 class CloseTest {
-    static List<Operation> all() {
-        return Operations.all();
+    static List<Arguments> all() {
+        return Operations.onEveryApi(Operations.all());
     }
 
     @FunctionalInterface
@@ -70,20 +74,21 @@ class CloseTest {
 
     @ParameterizedTest
     @MethodSource("all")
-    void endsARequestTheServerDoesNotAnswer(Operation operation) throws InterruptedException {
-        try (var server = FakeServer.start((exchange, fakeServer) -> fakeServer.hang())) {
+    void endsARequestTheServerDoesNotAnswer(ApiVersion api, Operation operation) throws InterruptedException {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> fakeServer.hang())) {
             var client = new Client(server.url(), "secret");
 
             var thrown =
                     closeAfterRequest(server, client, () -> operation.call().accept(client));
 
-            assertInstanceOf(CancellationException.class, thrown);
+            Operations.assertFailedAfterSending(CancellationException.class, operation, thrown);
         }
     }
 
-    @Test
-    void endsARequestWhoseResponseStopsInTheMiddle() throws InterruptedException {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void endsARequestWhoseResponseStopsInTheMiddle(ApiVersion api) throws InterruptedException {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
             exchange.getResponseHeaders().set("Server", FakeServer.SERVER_HEADER);
             exchange.sendResponseHeaders(200, 1000);
             exchange.getResponseBody().write("[".getBytes());
@@ -94,15 +99,17 @@ class CloseTest {
 
             var thrown = closeAfterRequest(server, client, () -> client.writeEvents(List.of()));
 
-            assertInstanceOf(CancellationException.class, thrown);
+            var outcomeUnknown = assertInstanceOf(OutcomeUnknownException.class, thrown);
+            assertInstanceOf(CancellationException.class, outcomeUnknown.getCause());
         }
     }
 
-    @Test
-    void endsAStreamThatIsRunning() throws InterruptedException {
-        try (var server = FakeServer.start((exchange, fakeServer) -> {
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void endsAStreamThatIsRunning(ApiVersion api) throws InterruptedException {
+        try (var server = FakeServer.start(api, (exchange, fakeServer) -> {
             FakeServer.startStream(exchange);
-            FakeServer.writeLine(exchange, Lines.SUBJECT);
+            FakeServer.writeLine(exchange, Lines.subject(api));
             fakeServer.hang();
         })) {
             var client = new Client(server.url(), "secret");
@@ -113,7 +120,7 @@ class CloseTest {
             // rather than after a fixed time, which a slow machine may need to
             // deliver it.
             var thrown = closeAt(hasSubject::await, client, () -> {
-                try (var subjects = client.readSubjects("/")) {
+                try (var subjects = client.readSubjects("/", new ReadSubjectsOptions(true))) {
                     subjects.forEach(subject -> {
                         subjectsRead.add(subject);
                         hasSubject.countDown();
@@ -126,23 +133,24 @@ class CloseTest {
         }
     }
 
-    @Test
-    void endsAStreamThatHasNotStartedYet() {
-        try (var server = FakeServer.respondingWith(200, "")) {
+    @ParameterizedTest
+    @EnumSource(ApiVersion.class)
+    void endsAStreamThatHasNotStartedYet(ApiVersion api) {
+        try (var server = FakeServer.respondingWith(api, 200, "")) {
             var client = new Client(server.url(), "secret");
-            var subjects = client.readSubjects("/");
+            var subjects = client.readSubjects("/", new ReadSubjectsOptions(true));
 
             client.close();
 
             assertThrows(CancellationException.class, subjects::toList);
-            assertEquals(0, server.requestCount());
+            assertEquals(List.of(), server.requests());
         }
     }
 
     @ParameterizedTest
     @MethodSource("all")
-    void rejectsEveryRequestOnceItIsClosed(Operation operation) {
-        try (var server = FakeServer.respondingWith(200, "")) {
+    void rejectsEveryRequestOnceItIsClosed(ApiVersion api, Operation operation) {
+        try (var server = FakeServer.respondingWith(api, 200, "")) {
             var client = new Client(server.url(), "secret");
             client.close();
 
@@ -150,7 +158,50 @@ class CloseTest {
                     IllegalStateException.class, () -> operation.call().accept(client));
 
             assertEquals("client is closed", exception.getMessage());
-            assertEquals(0, server.requestCount());
+            assertEquals(List.of(), server.requests());
+        }
+    }
+
+    // The headers of the response have arrived, but the stream does not have
+    // its body yet, when it is closed. It closes the body nevertheless, which
+    // ends the connection, so that an HTTP client of the caller's own keeps
+    // none open.
+    @Test
+    void closesTheBodyOfAStreamThatIsClosedBeforeItHasTheBody() throws InterruptedException {
+        var isConnectionClosed = new CountDownLatch(1);
+        var httpClient = new BodyHoldingHttpClient();
+
+        try (var server = FakeServer.start(ApiVersion.V1, (exchange, fakeServer) -> {
+            FakeServer.startStream(exchange);
+            try {
+                while (true) {
+                    FakeServer.writeLine(exchange, Lines.heartbeat(ApiVersion.V1));
+                    Thread.sleep(Duration.ofMillis(50));
+                }
+            } catch (IOException ex) {
+                isConnectionClosed.countDown();
+            }
+        })) {
+            var client = new Client(server.url(), "secret", new ClientOptions().withHttpClient(httpClient));
+            var events = client.observeEvents("/", new ObserveEventsOptions(true));
+            var thrown = new AtomicReference<Throwable>();
+            var consumer = Thread.ofPlatform().start(() -> {
+                try {
+                    events.forEach(event -> {});
+                } catch (RuntimeException ex) {
+                    thrown.set(ex);
+                }
+            });
+
+            httpClient.awaitBodyRequested();
+            events.close();
+            httpClient.releaseBody();
+            consumer.join();
+
+            assertInstanceOf(CancellationException.class, thrown.get());
+            assertTrue(isConnectionClosed.await(5, TimeUnit.SECONDS));
+        } finally {
+            httpClient.shutdownNow();
         }
     }
 
@@ -173,7 +224,7 @@ class CloseTest {
 
     @Test
     void leavesAGivenHttpClientOpen() throws Exception {
-        try (var server = FakeServer.respondingWith(200, "ok");
+        try (var server = FakeServer.respondingWith(ApiVersion.V1, 200, "ok");
                 var httpClient = HttpClient.newHttpClient()) {
             var client = new Client(server.url(), "secret", new ClientOptions().withHttpClient(httpClient));
 

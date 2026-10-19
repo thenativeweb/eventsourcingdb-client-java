@@ -32,22 +32,25 @@ class ReadEventTypeTest {
         var exception =
                 assertThrows(DbApiException.class, () -> client.readEventType("io.eventsourcingdb.test.nonexistent"));
 
-        assertEquals(404, exception.statusCode());
-        assertFalse(exception.reason().isEmpty());
-        assertEquals(
-                "failed to read event type, got HTTP status code '404', expected '200': " + exception.reason(),
-                exception.getMessage());
+        assertEquals(ErrorCode.EVENT_TYPE_UNKNOWN, exception.code());
+        assertFalse(exception.description().isEmpty());
     }
 
     @Test
     void failsIfTheEventTypeIsMalformed() {
         var exception = assertThrows(DbApiException.class, () -> client.readEventType("io.eventsourcingdb.test."));
 
-        assertEquals(400, exception.statusCode());
-        assertFalse(exception.reason().isEmpty());
-        assertEquals(
-                "failed to read event type, got HTTP status code '400', expected '200': " + exception.reason(),
-                exception.getMessage());
+        // The v1 API refuses the request with a status code. The v2 API
+        // accepts a request of the right shape, and reports a value that is
+        // malformed in its answer.
+        if (Database.offersV2Api(container)) {
+            assertEquals(200, exception.status());
+            assertEquals(ErrorCode.EVENT_TYPE_MALFORMED, exception.code());
+        } else {
+            assertEquals(400, exception.status());
+            assertEquals("", exception.code());
+        }
+        assertFalse(exception.description().isEmpty());
     }
 
     @Test
@@ -65,6 +68,6 @@ class ReadEventTypeTest {
 
         var eventType = client.readEventType("io.eventsourcingdb.test.foo");
 
-        assertEquals(new EventType("io.eventsourcingdb.test.foo", true, Optional.of(schema)), eventType);
+        assertEquals(new EventType("io.eventsourcingdb.test.foo", false, Optional.of(schema)), eventType);
     }
 }

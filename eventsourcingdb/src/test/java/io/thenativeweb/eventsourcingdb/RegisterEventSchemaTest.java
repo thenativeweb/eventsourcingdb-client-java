@@ -47,6 +47,6 @@ class RegisterEventSchemaTest {
 
         var exception =
                 assertThrows(DbApiException.class, () -> client.registerEventSchema("io.eventsourcingdb.test", SCHEMA));
-        assertEquals(409, exception.statusCode());
+        assertEquals(ErrorCode.EVENT_SCHEMA_ALREADY_REGISTERED, exception.code());
     }
 }
