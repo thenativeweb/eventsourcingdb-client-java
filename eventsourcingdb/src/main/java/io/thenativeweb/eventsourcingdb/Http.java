@@ -73,7 +73,7 @@ final class Http {
             String action, HttpResponse<InputStream> response, Duration stallTimeout, CodeMapping codes) {
         if (!isFromEventSourcingDb(response)) {
             close(response.body());
-            throw new InvalidServerHeaderException();
+            throw new InvalidServerHeaderException(response.statusCode());
         }
 
         if (response.statusCode() != 200) {

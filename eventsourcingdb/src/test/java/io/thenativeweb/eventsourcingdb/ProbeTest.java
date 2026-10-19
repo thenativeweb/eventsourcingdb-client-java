@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.sun.net.httpserver.HttpExchange;
+import io.thenativeweb.eventsourcingdb.Operations.Operation;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.http.HttpTimeoutException;
@@ -21,15 +22,19 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.core.JacksonException;
 
 // The first request of a client asks the server whether it offers the v2 API,
 // by pinging the v2 API. The client keeps a definitive answer, and asks again
-// after any other.
+// after any other, and once the server answers a request through the v2 API
+// with 404 or 405.
 @Timeout(10)
 class ProbeTest {
     private static final Duration STALL_TIMEOUT = Duration.ofMillis(300);
@@ -40,7 +45,7 @@ class ProbeTest {
 
     // A server that answers each probe with the next of the given answers,
     // and every other request as EventSourcingDB 1.2.0 answers a ping or the
-    // verification of an API token.
+    // verification of an API token, unless it is given an answer for them.
     private static final class ProbedServer implements AutoCloseable {
         private final FakeServer server;
         private final AtomicInteger probeCount = new AtomicInteger();
@@ -51,20 +56,28 @@ class ProbeTest {
         }
 
         ProbedServer(Answer... answers) {
+            this(ProbedServer::answerAsV1, List.of(answers));
+        }
+
+        ProbedServer(Answer others, List<Answer> answers) {
             server = FakeServer.start((exchange, fakeServer) -> {
                 if (exchange.getRequestURI().getPath().equals(FakeServer.PROBE_PATH)) {
                     var index = probeCount.getAndIncrement();
-                    answers[Math.min(index, answers.length - 1)].answer(exchange, fakeServer);
+                    answers.get(Math.min(index, answers.size() - 1)).answer(exchange, fakeServer);
                     return;
                 }
 
-                FakeServer.respond(
-                        exchange,
-                        200,
-                        exchange.getRequestURI().getPath().equals("/api/v1/verify-api-token")
-                                ? V1_API_TOKEN_VERIFIED
-                                : V1_PING_RECEIVED);
+                others.answer(exchange, fakeServer);
             });
+        }
+
+        static void answerAsV1(HttpExchange exchange, FakeServer server) throws IOException {
+            FakeServer.respond(
+                    exchange,
+                    200,
+                    exchange.getRequestURI().getPath().equals("/api/v1/verify-api-token")
+                            ? V1_API_TOKEN_VERIFIED
+                            : V1_PING_RECEIVED);
         }
 
         Client client() {
@@ -87,6 +100,15 @@ class ProbeTest {
 
     private static ProbedServer.Answer status(int status) {
         return (exchange, server) -> FakeServer.respond(exchange, status, "status " + status);
+    }
+
+    // Answers with the given status as another server does, e.g. a proxy in
+    // front of the database, which sends a Server header of its own.
+    private static ProbedServer.Answer fromAnotherServer(int status) {
+        return (exchange, server) -> {
+            exchange.getResponseHeaders().set("Server", "nginx");
+            exchange.sendResponseHeaders(status, -1);
+        };
     }
 
     private static final ProbedServer.Answer V1 = status(404);
@@ -206,10 +228,7 @@ class ProbeTest {
     @ParameterizedTest
     @ValueSource(ints = {404, 405})
     void usesTheV1ApiIfAnotherServerDoesNotKnowThePathOfThePing(int status) {
-        try (var server = new ProbedServer((exchange, fakeServer) -> {
-            exchange.getResponseHeaders().set("Server", "nginx");
-            exchange.sendResponseHeaders(status, -1);
-        })) {
+        try (var server = new ProbedServer(fromAnotherServer(status))) {
             var client = server.client();
 
             assertDoesNotThrow(client::ping);
@@ -238,12 +257,7 @@ class ProbeTest {
     @ParameterizedTest
     @ValueSource(ints = {200, 500})
     void failsTheRequestIfAnotherServerAnswersTheProbeOtherwise(int status) {
-        try (var server = new ProbedServer(
-                (exchange, fakeServer) -> {
-                    exchange.getResponseHeaders().set("Server", "nginx");
-                    exchange.sendResponseHeaders(status, -1);
-                },
-                V1)) {
+        try (var server = new ProbedServer(fromAnotherServer(status), V1)) {
             var client = server.client();
 
             assertThrows(InvalidServerHeaderException.class, client::ping);
@@ -299,6 +313,19 @@ class ProbeTest {
         }
     }
 
+    // Runs the request in a thread of its own, which puts what the request
+    // threw into the outcomes under the given key, or nothing if it succeeded.
+    private static <K> Thread start(K key, Runnable request, Map<K, Optional<Throwable>> outcomes) {
+        return Thread.ofPlatform().start(() -> {
+            try {
+                request.run();
+                outcomes.put(key, Optional.empty());
+            } catch (RuntimeException ex) {
+                outcomes.put(key, Optional.of(ex));
+            }
+        });
+    }
+
     // Runs each of the requests in a thread of its own, releases the probe
     // once all of them wait for it, and returns what each of them threw, or
     // null for those that succeeded.
@@ -309,16 +336,7 @@ class ProbeTest {
         var threads = new ArrayList<Thread>();
 
         for (var index = 0; index < requests.size(); index++) {
-            var request = requests.get(index);
-            var requestIndex = index;
-            threads.add(Thread.ofPlatform().start(() -> {
-                try {
-                    request.run();
-                    outcomes.put(requestIndex, Optional.empty());
-                } catch (RuntimeException ex) {
-                    outcomes.put(requestIndex, Optional.of(ex));
-                }
-            }));
+            threads.add(start(index, requests.get(index), outcomes));
         }
 
         awaitWaiting(threads);
@@ -437,6 +455,253 @@ class ProbeTest {
 
             assertThrows(CancellationException.class, subjects::toList);
             closing.join();
+        }
+    }
+
+    // Answers every path of the v2 API with the given answer, and the v1 API
+    // as EventSourcingDB 1.2.0 does.
+    private static ProbedServer.Answer withoutTheV2Api(ProbedServer.Answer v2Answer) {
+        return (exchange, server) -> {
+            if (exchange.getRequestURI().getPath().startsWith("/api/v2/")) {
+                v2Answer.answer(exchange, server);
+                return;
+            }
+
+            ProbedServer.answerAsV1(exchange, server);
+        };
+    }
+
+    // A server that was rolled back to a version without the v2 API answers
+    // every path of the v2 API with the given status, as EventSourcingDB
+    // 1.2.0 does, and the v1 API as it did before.
+    private static ProbedServer.Answer rolledBack(int status) {
+        return withoutTheV2Api(status(status));
+    }
+
+    // The ping of the v2 API goes to the path of the probe, which the server
+    // answers as a probe, so only the other requests are made here.
+    static Stream<Arguments> everyAuthenticatedRequestWith404Or405() {
+        return Stream.of(404, 405)
+                .flatMap(status ->
+                        Operations.authenticated().stream().map(operation -> Arguments.of(status, operation)));
+    }
+
+    // A server that offered the v2 API when the client asked, and was rolled
+    // back to a version without it afterwards, answers the next request
+    // through the v2 API with 404 or 405. That request fails as any other
+    // that the server refuses, a write with an unknown outcome, and the next
+    // request asks again which API the server offers.
+    @ParameterizedTest
+    @MethodSource("everyAuthenticatedRequestWith404Or405")
+    void failsTheRequestAndAsksAgainIfTheServerNoLongerOffersTheV2Api(int status, Operation operation) {
+        try (var server = new ProbedServer(rolledBack(status), List.of(V2, V1))) {
+            var client = server.client();
+
+            var exception = Operations.assertFailsAfterSending(DbApiException.class, operation, client);
+            assertDoesNotThrow(client::verifyApiToken);
+
+            assertEquals(status, exception.status());
+            assertEquals(2, server.probeCount());
+            assertEquals("/api/v1/verify-api-token", server.paths().getLast());
+        }
+    }
+
+    // A proxy in front of the database that passes on the v1 API only, e.g.
+    // one set up again along with a rollback, answers the paths of the v2 API
+    // itself, without the Server header of EventSourcingDB. The request fails
+    // for the missing header as before, a write with an unknown outcome, and
+    // the next request asks again, which the proxy answers itself, too.
+    @ParameterizedTest
+    @MethodSource("everyAuthenticatedRequestWith404Or405")
+    void failsTheRequestAndAsksAgainIfAProxyNoLongerPassesOnTheV2Api(int status, Operation operation) {
+        try (var server =
+                new ProbedServer(withoutTheV2Api(fromAnotherServer(status)), List.of(V2, fromAnotherServer(status)))) {
+            var client = server.client();
+
+            Operations.assertFailsAfterSending(InvalidServerHeaderException.class, operation, client);
+            assertDoesNotThrow(client::verifyApiToken);
+
+            assertEquals(2, server.probeCount());
+            assertEquals("/api/v1/verify-api-token", server.paths().getLast());
+        }
+    }
+
+    // An error that the v2 API reports in its answer has the status code 200,
+    // and tells nothing about the API, so the client keeps the v2 API.
+    @Test
+    void keepsTheV2ApiIfTheServerReportsAnErrorInItsAnswer() {
+        var error = ApiVersion.V2.item(
+                "error",
+                "{\"code\":\"" + ErrorCode.EVENT_TYPE_UNKNOWN + "\",\"description\":\"event type is unknown\"}");
+
+        try (var server =
+                new ProbedServer((exchange, fakeServer) -> FakeServer.respond(exchange, 200, error), List.of(V2, V1))) {
+            var client = server.client();
+
+            var exception = assertThrows(DbApiException.class, () -> client.readEventType("io.x.y"));
+            assertThrows(DbApiException.class, () -> client.readEventType("io.x.y"));
+
+            assertEquals(200, exception.status());
+            assertEquals(
+                    List.of(FakeServer.PROBE_PATH, "/api/v2/data/read-event-type", "/api/v2/data/read-event-type"),
+                    server.paths());
+        }
+    }
+
+    // Through the v1 API, a 404 may be an error of its own, e.g. an event type
+    // that does not exist, so the client keeps the v1 API.
+    @Test
+    void keepsTheV1ApiIfTheServerAnswersARequestWith404() {
+        try (var server = new ProbedServer(
+                (exchange, fakeServer) -> FakeServer.respond(exchange, 404, "event type 'io.x.y' not found"),
+                List.of(V1, V2))) {
+            var client = server.client();
+
+            var exception = assertThrows(DbApiException.class, () -> client.readEventType("io.x.y"));
+            assertThrows(DbApiException.class, () -> client.readEventType("io.x.y"));
+
+            assertEquals(404, exception.status());
+            assertEquals(
+                    List.of(FakeServer.PROBE_PATH, "/api/v1/read-event-type", "/api/v1/read-event-type"),
+                    server.paths());
+        }
+    }
+
+    // A gate holds an answer of the server until the test opens it, and tells
+    // the test once an answer waits at it.
+    private record Gate(CountDownLatch reached, CountDownLatch opened) {
+        Gate() {
+            this(new CountDownLatch(1), new CountDownLatch(1));
+        }
+
+        void pass() throws InterruptedException {
+            reached.countDown();
+            opened.await();
+        }
+
+        void awaitReached() throws InterruptedException {
+            reached.await();
+        }
+
+        void open() {
+            opened.countDown();
+        }
+    }
+
+    // Requests through the v2 API that were sent before the server was rolled
+    // back may be answered with 404 only after another one made the client ask
+    // again, while the new probe runs, or once it has its answer. Neither
+    // disturbs the probe: the requests that wait for it, and those that start
+    // to wait afterwards, share it, and its answer is kept.
+    @Test
+    void aLate404LeavesTheNewProbeAndItsAnswerAlone() throws InterruptedException {
+        var duringProbe = new Gate();
+        var afterProbe = new Gate();
+        var newProbe = new Gate();
+        var heldRequests = List.of(duringProbe, afterProbe);
+        var v2RequestCount = new AtomicInteger();
+
+        ProbedServer.Answer others = (exchange, fakeServer) -> {
+            if (exchange.getRequestURI().getPath().startsWith("/api/v2/")) {
+                var index = v2RequestCount.getAndIncrement();
+                if (index < heldRequests.size()) {
+                    heldRequests.get(index).pass();
+                }
+            }
+
+            rolledBack(404).answer(exchange, fakeServer);
+        };
+        ProbedServer.Answer heldProbe = (exchange, fakeServer) -> {
+            newProbe.pass();
+            V1.answer(exchange, fakeServer);
+        };
+
+        try (var server = new ProbedServer(others, List.of(V2, heldProbe, V1))) {
+            // The client's own stall timeout leaves the gates all the time
+            // they need.
+            var client = new Client(server.server.url(), "secret");
+            var outcomes = new ConcurrentHashMap<String, Optional<Throwable>>();
+
+            var lateDuringProbe = start("late during probe", client::verifyApiToken, outcomes);
+            duringProbe.awaitReached();
+            var lateAfterProbe = start("late after probe", client::verifyApiToken, outcomes);
+            afterProbe.awaitReached();
+
+            assertThrows(DbApiException.class, client::verifyApiToken);
+            assertNull(client.chosenTransport());
+
+            var waiting = start("waiting", client::verifyApiToken, outcomes);
+            newProbe.awaitReached();
+            duringProbe.open();
+            lateDuringProbe.join();
+
+            var joining = start("joining", client::verifyApiToken, outcomes);
+            while (joining.isAlive() && joining.getState() != Thread.State.WAITING) {
+                Thread.onSpinWait();
+            }
+            newProbe.open();
+            waiting.join();
+            joining.join();
+
+            afterProbe.open();
+            lateAfterProbe.join();
+            assertDoesNotThrow(client::verifyApiToken);
+
+            for (var late : List.of("late during probe", "late after probe")) {
+                var exception = assertInstanceOf(
+                        DbApiException.class, outcomes.get(late).orElseThrow());
+                assertEquals(404, exception.status());
+            }
+            assertEquals(Optional.empty(), outcomes.get("waiting"));
+            assertEquals(Optional.empty(), outcomes.get("joining"));
+            assertEquals(2, server.probeCount());
+            assertEquals("/api/v1/verify-api-token", server.paths().getLast());
+        }
+    }
+
+    // A request through the v2 API that was sent before the server was rolled
+    // back may be answered with 404 only once a new probe found out the v2 API
+    // again, e.g. because the server was rolled forward meanwhile. That 404
+    // belongs to the answer that the request was sent under, so the answer of
+    // the new probe is kept.
+    @Test
+    void aLate404LeavesTheV2ApiThatANewProbeFoundOutAlone() throws InterruptedException {
+        var late = new Gate();
+        var v2RequestCount = new AtomicInteger();
+        var tokenVerified = ApiVersion.V2.item("event", "{\"type\":\"io.eventsourcingdb.api.token-verified\"}");
+
+        ProbedServer.Answer others = (exchange, fakeServer) -> {
+            var index = v2RequestCount.getAndIncrement();
+            if (index == 0) {
+                late.pass();
+            }
+            if (index < 2) {
+                status(404).answer(exchange, fakeServer);
+                return;
+            }
+
+            FakeServer.respond(exchange, 200, tokenVerified);
+        };
+
+        try (var server = new ProbedServer(others, List.of(V2))) {
+            // The client's own stall timeout leaves the gate all the time it
+            // needs.
+            var client = new Client(server.server.url(), "secret");
+            var outcomes = new ConcurrentHashMap<String, Optional<Throwable>>();
+
+            var lateRequest = start("late", client::verifyApiToken, outcomes);
+            late.awaitReached();
+            assertThrows(DbApiException.class, client::verifyApiToken);
+            assertDoesNotThrow(client::verifyApiToken);
+
+            late.open();
+            lateRequest.join();
+            assertDoesNotThrow(client::verifyApiToken);
+
+            var exception =
+                    assertInstanceOf(DbApiException.class, outcomes.get("late").orElseThrow());
+            assertEquals(404, exception.status());
+            assertEquals(2, server.probeCount());
         }
     }
 }

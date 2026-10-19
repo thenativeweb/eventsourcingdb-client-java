@@ -5,6 +5,7 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
@@ -18,8 +19,9 @@ import tools.jackson.databind.node.ObjectNode;
  * <p>The client talks to every supported version of EventSourcingDB, whether it offers the v2 API or not. Creating a
  * client sends no request. The first request of a client asks the server whether it offers the v2 API, and the client
  * uses the v2 API from then on if it does, and the v1 API otherwise. If asking fails, e.g. because the server can not
- * be reached, that first request fails, and the next request asks again. The v2 API reads with the HTTP method
- * {@code QUERY}, so a proxy in front of the database has to let it through.
+ * be reached, that first request fails, and the next request asks again. If the server answers a path of the v2 API
+ * with 404 or 405, e.g. after it was rolled back to a version without it, the next request asks again, too. The v2 API
+ * reads with the HTTP method {@code QUERY}, so a proxy in front of the database has to let it through.
  *
  * <p>Every method that sends a request throws a {@link DbApiException} if the server reports an error, e.g. a
  * precondition that does not hold, and an {@link InvalidServerHeaderException} if the server is not an
@@ -104,10 +106,27 @@ public final class Client implements AutoCloseable {
     }
 
     // Learns which API the server offers, which only the first request of a
-    // client asks the server for.
-    private Transport transport(String action) {
+    // client asks the server for, and sends the request through it. How the
+    // request fails may tell that the server does not offer that API any
+    // longer.
+    private <T extends @Nullable Object> T send(String action, Function<Transport, T> request) {
         Http.throwIfInterrupted(action);
-        return TransportChooser.await(action, transports.transport());
+        var choice = TransportChooser.await(action, transports.transport());
+
+        try {
+            return request.apply(choice.transport());
+        } catch (RuntimeException ex) {
+            transports.forgetIfTheV2ApiIsMissing(choice, ex);
+            throw ex;
+        }
+    }
+
+    // Sends a request that returns nothing, as send does.
+    private void run(String action, Consumer<Transport> request) {
+        send(action, transport -> {
+            request.accept(transport);
+            return null;
+        });
     }
 
     private <T> Stream<T> stream(String action, Function<Transport, StreamSpec<T>> specs) {
@@ -121,7 +140,7 @@ public final class Client implements AutoCloseable {
      * @throws EventSourcingDbException if the instance is not reachable, or does not confirm the ping
      */
     public void ping() {
-        transport("ping").ping();
+        run("ping", Transport::ping);
     }
 
     /**
@@ -131,7 +150,7 @@ public final class Client implements AutoCloseable {
      * @throws EventSourcingDbException if the instance does not confirm the API token
      */
     public void verifyApiToken() {
-        transport("verify API token").verifyApiToken();
+        run("verify API token", Transport::verifyApiToken);
     }
 
     /**
@@ -185,7 +204,7 @@ public final class Client implements AutoCloseable {
             }
         }
 
-        return transport("write events").writeEvents(body);
+        return send("write events", transport -> transport.writeEvents(body));
     }
 
     private static Map<String, Object> toRequest(Precondition precondition) {
@@ -362,7 +381,7 @@ public final class Client implements AutoCloseable {
      * @throws DbApiException with the code {@link ErrorCode#EVENT_TYPE_UNKNOWN} if the event type does not exist
      */
     public EventType readEventType(String eventType) {
-        return transport("read event type").readEventType(eventType);
+        return send("read event type", transport -> transport.readEventType(eventType));
     }
 
     /**
@@ -378,7 +397,7 @@ public final class Client implements AutoCloseable {
      */
     public void registerEventSchema(String eventType, Map<String, ?> schema) {
         var schemaNode = Json.MAPPER.valueToTree(schema);
-        transport("register event schema").registerEventSchema(eventType, schemaNode);
+        run("register event schema", transport -> transport.registerEventSchema(eventType, schemaNode));
     }
 
     /**

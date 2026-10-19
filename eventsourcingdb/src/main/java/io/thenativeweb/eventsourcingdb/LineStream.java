@@ -121,7 +121,8 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
     }
 
     // Learns which API the server offers, and sends the request of the
-    // stream through it.
+    // stream through it. How the server answers the request may tell that it
+    // does not offer that API any longer.
     private Opened<T> open() {
         throwIfClosed();
         Http.throwIfInterrupted(action);
@@ -133,12 +134,18 @@ final class LineStream<T> extends Spliterators.AbstractSpliterator<T> {
         InputStream body;
         try {
             throwIfClosed();
-            spec = specs.apply(TransportChooser.await(action, transport));
+            var choice = TransportChooser.await(action, transport);
+            spec = specs.apply(choice.transport());
 
             var response = requests.sendForStream(spec.request());
             pending = response;
-            body = Http.await(action, response, requests.stallTimeout(), spec.codes())
-                    .body();
+            try {
+                body = Http.await(action, response, requests.stallTimeout(), spec.codes())
+                        .body();
+            } catch (RuntimeException ex) {
+                transports.forgetIfTheV2ApiIsMissing(choice, ex);
+                throw ex;
+            }
         } catch (RuntimeException ex) {
             throwIfClosed();
             throw ex;

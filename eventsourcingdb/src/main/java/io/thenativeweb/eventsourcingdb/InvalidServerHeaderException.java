@@ -8,7 +8,17 @@ package io.thenativeweb.eventsourcingdb;
 public final class InvalidServerHeaderException extends EventSourcingDbException {
     private static final long serialVersionUID = 1L;
 
-    InvalidServerHeaderException() {
+    /** The HTTP status code the server answered with. */
+    private final int status;
+
+    InvalidServerHeaderException(int status) {
         super("server must be EventSourcingDB");
+        this.status = status;
+    }
+
+    // Lets the client tell from the status code whether the server offers the
+    // v2 API, which a 404 or a 405 tells whatever server sent it.
+    int status() {
+        return status;
     }
 }
