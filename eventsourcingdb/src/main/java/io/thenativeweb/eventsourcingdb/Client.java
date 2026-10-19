@@ -5,6 +5,7 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
@@ -104,10 +105,27 @@ public final class Client implements AutoCloseable {
     }
 
     // Learns which API the server offers, which only the first request of a
-    // client asks the server for.
-    private Transport transport(String action) {
+    // client asks the server for, and sends the request through it. How the
+    // request fails may tell that the server does not offer that API any
+    // longer.
+    private <T extends @Nullable Object> T send(String action, Function<Transport, T> request) {
         Http.throwIfInterrupted(action);
-        return TransportChooser.await(action, transports.transport());
+        var transport = TransportChooser.await(action, transports.transport());
+
+        try {
+            return request.apply(transport);
+        } catch (RuntimeException ex) {
+            transports.forgetIfTheV2ApiIsMissing(transport, ex);
+            throw ex;
+        }
+    }
+
+    // Sends a request that returns nothing, as send does.
+    private void run(String action, Consumer<Transport> request) {
+        send(action, transport -> {
+            request.accept(transport);
+            return null;
+        });
     }
 
     private <T> Stream<T> stream(String action, Function<Transport, StreamSpec<T>> specs) {
@@ -121,7 +139,7 @@ public final class Client implements AutoCloseable {
      * @throws EventSourcingDbException if the instance is not reachable, or does not confirm the ping
      */
     public void ping() {
-        transport("ping").ping();
+        run("ping", Transport::ping);
     }
 
     /**
@@ -131,7 +149,7 @@ public final class Client implements AutoCloseable {
      * @throws EventSourcingDbException if the instance does not confirm the API token
      */
     public void verifyApiToken() {
-        transport("verify API token").verifyApiToken();
+        run("verify API token", Transport::verifyApiToken);
     }
 
     /**
@@ -185,7 +203,7 @@ public final class Client implements AutoCloseable {
             }
         }
 
-        return transport("write events").writeEvents(body);
+        return send("write events", transport -> transport.writeEvents(body));
     }
 
     private static Map<String, Object> toRequest(Precondition precondition) {
@@ -362,7 +380,7 @@ public final class Client implements AutoCloseable {
      * @throws DbApiException with the code {@link ErrorCode#EVENT_TYPE_UNKNOWN} if the event type does not exist
      */
     public EventType readEventType(String eventType) {
-        return transport("read event type").readEventType(eventType);
+        return send("read event type", transport -> transport.readEventType(eventType));
     }
 
     /**
@@ -378,7 +396,7 @@ public final class Client implements AutoCloseable {
      */
     public void registerEventSchema(String eventType, Map<String, ?> schema) {
         var schemaNode = Json.MAPPER.valueToTree(schema);
-        transport("register event schema").registerEventSchema(eventType, schemaNode);
+        run("register event schema", transport -> transport.registerEventSchema(eventType, schemaNode));
     }
 
     /**

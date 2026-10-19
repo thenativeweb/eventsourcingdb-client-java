@@ -64,7 +64,7 @@ client.verifyApiToken();
 
 ### Talking to Servers With and Without the v2 API
 
-The client works with servers that offer the v2 API, and with servers that do not, such as EventSourcingDB 1.2.0. Creating a client sends no request. The first request of a client asks the server whether it offers the v2 API, and the client remembers the answer: from then on, it uses the v2 API if the server offers it, and the v1 API otherwise. If asking fails, e.g. because the server can not be reached, the first request fails, and the next one asks again.
+The client works with servers that offer the v2 API, and with servers that do not, such as EventSourcingDB 1.2.0. Creating a client sends no request. The first request of a client asks the server whether it offers the v2 API, and the client remembers the answer: from then on, it uses the v2 API if the server offers it, and the v1 API otherwise. If asking fails, e.g. because the server can not be reached, the first request fails, and the next one asks again. If the server answers a path of the v2 API with 404 or 405, e.g. after it was rolled back to a version without it, the client asks again on the next request.
 
 The v2 API reads with the HTTP method `QUERY` ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)), which carries a body, as `POST` does, but changes nothing. If a proxy, a load balancer, or a firewall sits in front of the database, it has to let `QUERY` through. The client does not fall back to `POST`.
 

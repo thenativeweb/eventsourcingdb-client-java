@@ -26,6 +26,10 @@ import tools.jackson.core.JacksonException;
 // the request that asked fails, and the next request asks again. Requests
 // that are made while the server is being asked wait for its answer rather
 // than asking again, and fail along with it, each with its own action.
+//
+// A server that answers a request through the v2 API with 404 or 405 does not
+// offer it any longer, e.g. because it was rolled back to a version without
+// it, so the client forgets the answer, and the next request asks again.
 final class TransportChooser {
     private static final String PROBE_PATH = "/api/v2/system/ping";
 
@@ -67,6 +71,51 @@ final class TransportChooser {
         synchronized (lock) {
             return chosen;
         }
+    }
+
+    // Forgets the API once the server answered a request through the v2 API
+    // with 404 or 405, while the request fails as it does anyway. As for the
+    // probe, that holds whatever server sent the answer, so also for one that
+    // lacks the Server header: forgetting only makes the next request ask
+    // again, and the probe decides. A write fails that way with an
+    // OutcomeUnknownException, whose cause is the failure. Through the v1
+    // API, a 404 may be an error of its own, e.g. an event type that does not
+    // exist, and an error that the v2 API reports in its answer has the status
+    // code 200, so neither tells anything about the API.
+    //
+    // Only a remembered v2 API is forgotten, so that a request answered late
+    // leaves alone the probe that another one started meanwhile, which other
+    // requests may wait for, and the v1 API that such a probe found out.
+    void forgetIfTheV2ApiIsMissing(Transport transport, RuntimeException failure) {
+        var answer = failure instanceof OutcomeUnknownException ? failure.getCause() : failure;
+        if (transport != v2 || !isAnsweredWithoutTheV2Api(answer)) {
+            return;
+        }
+
+        synchronized (lock) {
+            if (chosen == v2) {
+                chosen = null;
+            }
+        }
+    }
+
+    // Tells whether a request failed because the server answered it with a
+    // status code that says that it does not offer the v2 API.
+    private static boolean isAnsweredWithoutTheV2Api(@Nullable Throwable answer) {
+        if (answer instanceof DbApiException exception) {
+            return isV2ApiMissing(exception.status());
+        }
+        if (answer instanceof InvalidServerHeaderException exception) {
+            return isV2ApiMissing(exception.status());
+        }
+
+        return false;
+    }
+
+    // A server answers the paths of the v2 API with 404 or 405 if it does not
+    // offer the v2 API, as the comment on the class tells.
+    private static boolean isV2ApiMissing(int status) {
+        return status == 404 || status == 405;
     }
 
     // Waits for the transport. A failed probe fails the request with an
@@ -145,11 +194,11 @@ final class TransportChooser {
         // proxy that passes on the v1 API only answers the probe itself. The
         // requests to the v1 API check that the server is an EventSourcingDB.
         var status = answer.statusCode();
-        if (status == 404 || status == 405) {
+        if (isV2ApiMissing(status)) {
             return v1;
         }
         if (!Http.isFromEventSourcingDb(answer)) {
-            throw new ProbeFailure(action -> new InvalidServerHeaderException());
+            throw new ProbeFailure(action -> new InvalidServerHeaderException(status));
         }
         if (status != 200) {
             var body = answer.body().getBytes(UTF_8);
