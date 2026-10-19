@@ -800,6 +800,8 @@ To check if the test container is running, call the `isRunning` method:
 var isRunning = container.isRunning();
 ```
 
+`start` waits until the database answers a ping, for up to 30 seconds from creating the container. Pulling the image does not count. If the container runs, but the database does not become reachable in time, `start` replaces the container with a new one, up to 3 containers in total. If Docker fails, or if the container exits, `start` fails at once, and in the latter case names the last lines of the container's log. Whenever a container fails to start, `start` removes it.
+
 To get a client with options of your own, e.g. the data mapper of your application, hand them to `getClient`:
 
 ```java
@@ -832,6 +834,13 @@ Similarly, you can configure the port to use and the API token. Call the `withPo
 var container = new Container()
   .withPort(4000)
   .withApiToken("secret");
+```
+
+To change how long `start` waits for the database in each container, call the `withStartupTimeout` method. The default is 30 seconds:
+
+```java
+var container = new Container()
+  .withStartupTimeout(Duration.ofSeconds(60));
 ```
 
 If you want to sign events, call the `withSigningKey` method. This generates a new signing and verification key pair, and hands the signing key to the container:
