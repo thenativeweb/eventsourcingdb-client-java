@@ -31,18 +31,26 @@ final class Requests {
     private final Duration stallTimeout;
     private final HttpClient httpClient;
     private final boolean isHttpClientOwned;
+    private final WriteRetries writeRetries;
 
     private final Object lock = new Object();
     private final Set<Runnable> openRequests = ConcurrentHashMap.newKeySet();
     private final Set<LineStream<?>> openStreams = ConcurrentHashMap.newKeySet();
     private volatile boolean isClosed;
 
-    Requests(URI baseUrl, String apiToken, Duration stallTimeout, HttpClient httpClient, boolean isHttpClientOwned) {
+    Requests(
+            URI baseUrl,
+            String apiToken,
+            Duration stallTimeout,
+            HttpClient httpClient,
+            boolean isHttpClientOwned,
+            WriteRetries writeRetries) {
         this.baseUrl = baseUrl;
         this.apiToken = apiToken;
         this.stallTimeout = stallTimeout;
         this.httpClient = httpClient;
         this.isHttpClientOwned = isHttpClientOwned;
+        this.writeRetries = writeRetries;
     }
 
     Duration stallTimeout() {
@@ -101,7 +109,12 @@ final class Requests {
             CodeMapping codes,
             Predicate<DbApiException> isRefusal,
             Function<String, T> interpretation) {
-        return send(action, request, codes, interpretation, failure -> Outcomes.ofWrite(action, failure, isRefusal));
+        return send(
+                action,
+                request,
+                codes,
+                interpretation,
+                failure -> Outcomes.ofWrite(action, failure, isRefusal, writeRetries));
     }
 
     // Sends a request, and interprets the body of its response. Every failure

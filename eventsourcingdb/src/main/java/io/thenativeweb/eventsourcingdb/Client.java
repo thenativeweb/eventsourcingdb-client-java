@@ -65,6 +65,11 @@ public final class Client implements AutoCloseable {
      * @param options the options, e.g. the HTTP client to send requests with
      */
     public Client(URI baseUrl, String apiToken, ClientOptions options) {
+        this(baseUrl, apiToken, options, WriteRetries.OF_THE_JDK);
+    }
+
+    // Lets tests tell whether the JDK sends writes again.
+    Client(URI baseUrl, String apiToken, ClientOptions options, WriteRetries writeRetries) {
         // The HTTP client of the client's own has no timeouts: the stall
         // timeout bounds every request, from connecting to the end of its
         // response. A timeout for whole requests would end every stream that
@@ -72,7 +77,13 @@ public final class Client implements AutoCloseable {
         // than the stall timeout says.
         var givenHttpClient = options.httpClient();
         var httpClient = givenHttpClient != null ? givenHttpClient : HttpClient.newHttpClient();
-        requests = new Requests(baseUrl, apiToken, options.stallTimeout(), httpClient, givenHttpClient == null);
+        requests = new Requests(
+                baseUrl, apiToken, options.stallTimeout(), httpClient, givenHttpClient == null, writeRetries);
+
+        // The JDK reads whether it sends writes again with the first request
+        // of any HTTP client, so the client reads it before it sends one, too,
+        // and keeps it, should it be cleared afterwards.
+        writeRetries.areEnabled();
 
         var givenDataMapper = options.dataMapper();
         dataMapper = givenDataMapper != null ? givenDataMapper : Json.MAPPER;

@@ -68,6 +68,15 @@ class WriteRetriesTest {
         assertFalse(new WriteRetries(netProperties, name -> null).areEnabled());
     }
 
+    // The JDK goes on with the properties it read before a line that is
+    // malformed.
+    @Test
+    void keepTheNetPropertiesThatWereReadBeforeALineThatIsMalformed() throws IOException {
+        var netProperties = netProperties(PROPERTY + "=true\nbroken=\\u00zz\n");
+
+        assertTrue(new WriteRetries(netProperties, name -> null).areEnabled());
+    }
+
     // The JDK keeps the value it read with the first request, so clearing the
     // property afterwards does not stop it from sending writes again.
     @Test

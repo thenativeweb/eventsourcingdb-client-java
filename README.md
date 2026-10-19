@@ -763,7 +763,7 @@ try {
 
 A write that certainly was not stored throws the failure itself instead: an `EventSourcingDbException` if the client could not connect to the server at all, and a `DbApiException` if the server refused the write, e.g. because a precondition does not hold, or because the client sent too many requests.
 
-*Note that the networking property `jdk.httpclient.enableAllMethodRetry` of the JDK, set as a system property or in the `conf/net.properties` of the JDK, makes the JDK send a write again if the connection closes before the answer arrives, which can store the write twice. If it is set, or was set at any time while the application ran, the client can not tell a write that could not connect from one that was sent again, so it throws an `OutcomeUnknownException` for that, too.*
+*Note that the networking property `jdk.httpclient.enableAllMethodRetry` of the JDK, set as a system property or in the `conf/net.properties` of the JDK, makes the JDK send a write again if the connection closes before the answer arrives, which can store the write twice. If it is set when a client is created, or when a write fails, the client can not tell a write that could not connect from one that was sent again, so from then on, it throws an `OutcomeUnknownException` for that, too.*
 
 ### Using Testcontainers
 

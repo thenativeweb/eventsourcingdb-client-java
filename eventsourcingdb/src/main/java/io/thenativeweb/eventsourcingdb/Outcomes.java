@@ -44,10 +44,6 @@ final class Outcomes {
 
     // Returns the failure itself if the write was certainly not stored, and an
     // OutcomeUnknownException that wraps it otherwise.
-    static RuntimeException ofWrite(String action, RuntimeException failure, Predicate<DbApiException> isRefusal) {
-        return ofWrite(action, failure, isRefusal, WriteRetries.OF_THE_JDK);
-    }
-
     // A connection that could not be established may follow on a write that
     // the server stored already, if the JDK sends writes again.
     static RuntimeException ofWrite(

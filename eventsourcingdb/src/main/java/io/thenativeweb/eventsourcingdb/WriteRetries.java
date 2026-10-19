@@ -18,8 +18,9 @@ import org.jspecify.annotations.Nullable;
 // to conf/net.properties of the JDK, and with an empty value for true. The
 // JDK reads it only once, with the first request of any HTTP client, at a
 // time the client does not know of. So the property is read with each write
-// that fails instead, and a value that was true once counts from then on,
-// since the JDK may have read it while it was.
+// that fails instead, as well as when a client is created, and a value that
+// was true once counts from then on, since the JDK may have read it while it
+// was.
 final class WriteRetries {
     private static final String PROPERTY = "jdk.httpclient.enableAllMethodRetry";
 
@@ -37,13 +38,14 @@ final class WriteRetries {
         this.systemProperties = systemProperties;
     }
 
-    // Like the JDK, it goes without defaults if it can not read the file.
+    // Like the JDK, it goes on with what it read so far, if it fails to read
+    // the file, whether the file is missing or malformed.
     private static Properties load(Path netProperties) {
         var properties = new Properties();
         try (var input = Files.newInputStream(netProperties)) {
             properties.load(input);
-        } catch (IOException ex) {
-            return new Properties();
+        } catch (IOException | RuntimeException ex) {
+            // The properties read so far stay, as they do for the JDK.
         }
 
         return properties;

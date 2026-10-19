@@ -12,6 +12,7 @@ import java.net.http.HttpConnectTimeoutException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Stream;
 import javax.net.ssl.SSLHandshakeException;
@@ -237,8 +238,8 @@ class OutcomeUnknownExceptionTest {
     void reportsAFailureBeforeSendingAsNotStored(IOException cause) {
         var failure = new EventSourcingDbException("failed to write events", cause);
 
-        assertSame(failure, Outcomes.ofWrite("write events", failure, Outcomes.V1_REFUSALS));
-        assertSame(failure, Outcomes.ofWrite("write events", failure, Outcomes.V2_REFUSALS));
+        assertSame(failure, Outcomes.ofWrite("write events", failure, Outcomes.V1_REFUSALS, writeRetries(null)));
+        assertSame(failure, Outcomes.ofWrite("write events", failure, Outcomes.V2_REFUSALS, writeRetries(null)));
     }
 
     private static WriteRetries writeRetries(@Nullable String systemProperty) {
@@ -267,11 +268,31 @@ class OutcomeUnknownExceptionTest {
         assertSame(failure, outcome);
     }
 
+    // The JDK reads whether it sends writes again with the first request, so
+    // the client reads it once it is created, too, and keeps it, should it
+    // be cleared afterwards.
+    @Test
+    void reportsAWriteThatCouldNotConnectAsUnknownIfTheJdkSentWritesAgainWhenTheClientWasCreated() {
+        var systemProperties = new HashMap<String, String>();
+        systemProperties.put("jdk.httpclient.enableAllMethodRetry", "true");
+        var writeRetries = new WriteRetries(Path.of("missing", "net.properties"), systemProperties::get);
+
+        var server = answeringThePingAndClosingConnections(ApiVersion.V1);
+        var client = new Client(server.url(), "secret", new ClientOptions(), writeRetries);
+        systemProperties.clear();
+        client.ping();
+        server.close();
+
+        var exception = assertThrows(OutcomeUnknownException.class, () -> client.writeEvents(List.of()));
+
+        assertInstanceOf(ConnectException.class, exception.getCause().getCause());
+    }
+
     @Test
     void reportsAnyOtherFailureAsUnknown() {
         var failure = new EventSourcingDbException("failed to write events", new IOException("connection reset"));
 
-        var outcome = Outcomes.ofWrite("write events", failure, Outcomes.V2_REFUSALS);
+        var outcome = Outcomes.ofWrite("write events", failure, Outcomes.V2_REFUSALS, writeRetries(null));
 
         assertInstanceOf(OutcomeUnknownException.class, outcome);
         assertSame(failure, outcome.getCause());
