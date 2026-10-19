@@ -19,8 +19,9 @@ import tools.jackson.databind.node.ObjectNode;
  * <p>The client talks to every supported version of EventSourcingDB, whether it offers the v2 API or not. Creating a
  * client sends no request. The first request of a client asks the server whether it offers the v2 API, and the client
  * uses the v2 API from then on if it does, and the v1 API otherwise. If asking fails, e.g. because the server can not
- * be reached, that first request fails, and the next request asks again. The v2 API reads with the HTTP method
- * {@code QUERY}, so a proxy in front of the database has to let it through.
+ * be reached, that first request fails, and the next request asks again. If the server answers a path of the v2 API
+ * with 404 or 405, e.g. after it was rolled back to a version without it, the next request asks again, too. The v2 API
+ * reads with the HTTP method {@code QUERY}, so a proxy in front of the database has to let it through.
  *
  * <p>Every method that sends a request throws a {@link DbApiException} if the server reports an error, e.g. a
  * precondition that does not hold, and an {@link InvalidServerHeaderException} if the server is not an
