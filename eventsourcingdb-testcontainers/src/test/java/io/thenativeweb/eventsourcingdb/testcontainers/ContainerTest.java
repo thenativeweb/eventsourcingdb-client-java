@@ -30,9 +30,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
@@ -48,6 +46,10 @@ class ContainerTest {
     // The label that tells the containers of a test of reuse apart, so that
     // they reuse only each other.
     private static final String REUSE_TEST_LABEL = "io.eventsourcingdb.client-java.reuse-test";
+
+    // How long a start may take at most to give up once the caller was
+    // interrupted.
+    private static final Duration INTERRUPT_BOUND = Duration.ofSeconds(5);
 
     private static final String EXITED_PREFIX =
             "failed to start the container, it exited before the database became reachable: ";
@@ -409,37 +411,78 @@ class ContainerTest {
         assertEquals("failed to start the container: interrupted", exception.getMessage());
         assertInstanceOf(InterruptedException.class, exception.getCause());
         assertTrue(wasInterrupted);
-        assertTrue(elapsed.compareTo(Container.INTERRUPT_GRACE_PERIOD) < 0, elapsed::toString);
+        assertTrue(elapsed.compareTo(INTERRUPT_BOUND) < 0, elapsed::toString);
 
-        // The start gave up within the grace period, so it removed the
-        // container before it returned, and did not replace it.
+        // The start removed the container before it returned, and did not
+        // replace it.
         assertEquals(1, labels.size());
         assertEquals(List.of(), existing(labels));
     }
 
-    // Docker takes longer than the grace period to create the container here,
-    // and creates it only after the start gave up, so the start removes it in
-    // the background. Starting again waits for that.
+    // The interrupt cuts the call to create the container short. Docker may
+    // still create the container afterwards, after the start looked for the
+    // containers to remove, which the test does itself here a second later.
+    // The start looks for them once more later, and removes it then.
     @Test
-    void givesUpOnAnInterruptWhileDockerCreatesTheContainerAndRemovesItLater() {
-        var caller = Thread.currentThread();
-        var interruptedAt = new AtomicLong();
-        var hasFirstCreateGoneOn = new AtomicBoolean();
-        var hadFirstCreateGoneOnAtSecond = new AtomicBoolean();
-        var firstContainersAtSecond = new AtomicReference<List<String>>();
+    void removesAContainerThatDockerCreatesAfterAnInterruptCutTheCreateShort() {
+        var dockerClient = DockerClientFactory.instance().client();
+        var lateContainerId = new CompletableFuture<String>();
         var container = new Container().withImageTag(ImageTag.get());
         var labels = labelsOf(container);
         container.withCreateContainerCmdModifier(command -> {
-            if (labels.size() == 1) {
-                interruptedAt.set(System.nanoTime());
-                caller.interrupt();
-                pause(Container.INTERRUPT_GRACE_PERIOD.plusSeconds(2));
-                hasFirstCreateGoneOn.set(true);
-                return;
+            var label = command.getLabels().get(Container.START_LABEL);
+            CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS)
+                    .execute(() -> lateContainerId.complete(dockerClient
+                            .createContainerCmd(command.getImage())
+                            .withLabels(Map.of(Container.START_LABEL, label))
+                            .exec()
+                            .getId()));
+            Thread.currentThread().interrupt();
+        });
+
+        try {
+            var startedAt = System.nanoTime();
+            IllegalStateException exception;
+            boolean wasInterrupted;
+            try {
+                exception = assertThrows(IllegalStateException.class, container::start);
+            } finally {
+                wasInterrupted = Thread.interrupted();
+            }
+            var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+            assertEquals(IllegalStateException.class, exception.getClass());
+            assertEquals("failed to start the container: interrupted", exception.getMessage());
+            assertInstanceOf(InterruptedException.class, exception.getCause());
+            assertTrue(wasInterrupted);
+            assertTrue(elapsed.compareTo(INTERRUPT_BOUND) < 0, elapsed::toString);
+
+            var lateContainer = lateContainerId.orTimeout(30, TimeUnit.SECONDS).join();
+            assertEquals(List.of(lateContainer), existing(labels));
+
+            var deadline = System.nanoTime()
+                    + Container.LATE_REMOVAL_DELAY.plusSeconds(10).toNanos();
+            while (!existing(labels).isEmpty() && System.nanoTime() - deadline < 0) {
+                pause(Duration.ofMillis(100));
             }
 
-            hadFirstCreateGoneOnAtSecond.set(hasFirstCreateGoneOn.get());
-            firstContainersAtSecond.set(existing(labels.subList(0, 1)));
+            assertEquals(1, labels.size());
+            assertEquals(List.of(), existing(labels));
+        } finally {
+            remove(labels);
+        }
+    }
+
+    // The attempt fails here without a call to Docker that would cut the
+    // interrupt short, so the interrupt status is still set once the attempt
+    // failed. The start removes the containers of the attempt all the same.
+    @Test
+    void removesTheContainersOfAnAttemptThatAnInterruptEnded() {
+        var container = new Container().withImageTag(ImageTag.get());
+        var labels = labelsOf(container);
+        container.withCreateContainerCmdModifier(command -> {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while configuring the container");
         });
 
         IllegalStateException exception;
@@ -449,43 +492,27 @@ class ContainerTest {
         } finally {
             wasInterrupted = Thread.interrupted();
         }
-        var elapsed = Duration.ofNanos(System.nanoTime() - interruptedAt.get());
 
-        assertEquals(IllegalStateException.class, exception.getClass());
         assertEquals("failed to start the container: interrupted", exception.getMessage());
-        assertInstanceOf(InterruptedException.class, exception.getCause());
         assertTrue(wasInterrupted);
-        assertTrue(elapsed.compareTo(Container.INTERRUPT_GRACE_PERIOD) >= 0, elapsed::toString);
-        assertTrue(elapsed.compareTo(Container.INTERRUPT_GRACE_PERIOD.plusSeconds(2)) < 0, elapsed::toString);
-
-        container.start();
-        try {
-            assertTrue(hadFirstCreateGoneOnAtSecond.get());
-            assertEquals(List.of(), firstContainersAtSecond.get());
-            container.getClient().ping();
-        } finally {
-            container.stop();
-        }
-
-        assertEquals(2, labels.size());
+        assertArrayEquals(new Throwable[0], exception.getSuppressed());
+        assertEquals(1, labels.size());
         assertEquals(List.of(), existing(labels));
     }
 
-    // Pulling the image takes longer than the grace period here. The start
-    // goes on pulling in the background, but creates no container after it,
-    // and stopping waits for that.
+    // Testcontainers waits for the image here, which takes a minute, and
+    // reports the interrupt as the cause of its failure.
     @Test
-    void givesUpOnAnInterruptWhileItPullsTheImageWithoutCreatingAContainer() {
+    void givesUpOnAnInterruptWhileItPullsTheImage() {
         var caller = Thread.currentThread();
-        var pull = CompletableFuture.supplyAsync(
-                () -> "thenativeweb/eventsourcingdb:" + ImageTag.get(),
-                CompletableFuture.delayedExecutor(
-                        Container.INTERRUPT_GRACE_PERIOD.plusSeconds(3).toMillis(), TimeUnit.MILLISECONDS));
         var container = new Container();
-        container.setImage(pull);
+        container.setImage(CompletableFuture.supplyAsync(
+                () -> "thenativeweb/eventsourcingdb:" + ImageTag.get(),
+                CompletableFuture.delayedExecutor(1, TimeUnit.MINUTES)));
         var labels = labelsOf(container);
         CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS).execute(caller::interrupt);
 
+        var startedAt = System.nanoTime();
         IllegalStateException exception;
         boolean wasInterrupted;
         try {
@@ -493,23 +520,39 @@ class ContainerTest {
         } finally {
             wasInterrupted = Thread.interrupted();
         }
+        var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
 
         assertEquals("failed to start the container: interrupted", exception.getMessage());
+        assertInstanceOf(InterruptedException.class, exception.getCause());
         assertTrue(wasInterrupted);
-        assertFalse(pull.isDone());
-
-        container.stop();
-
-        assertTrue(pull.isDone());
+        assertTrue(elapsed.compareTo(INTERRUPT_BOUND) < 0, elapsed::toString);
         assertEquals(List.of(), labels);
     }
 
+    // Users configure the container with modifiers, which must run where
+    // Testcontainers runs them, on the thread that starts the container.
+    @Test
+    void runsModifiersOnTheThreadOfTheCaller() {
+        var modifierThreads = new CopyOnWriteArrayList<Thread>();
+        var container = new Container()
+                .withImageTag(ImageTag.get())
+                .withCreateContainerCmdModifier(command -> modifierThreads.add(Thread.currentThread()));
+
+        container.start();
+        try {
+            assertEquals(List.of(Thread.currentThread()), modifierThreads);
+        } finally {
+            container.stop();
+        }
+    }
+
+    // The container resolved its image already, so the start needs no call to
+    // Docker that the interrupt could cut short before it asks Docker to
+    // create a container.
     @Test
     void givesUpAtOnceIfTheThreadIsInterruptedAlready() {
-        var container = new Container();
-        container.setImage(CompletableFuture.supplyAsync(
-                () -> "thenativeweb/eventsourcingdb:" + ImageTag.get(),
-                CompletableFuture.delayedExecutor(1, TimeUnit.MINUTES)));
+        var container = new Container().withImageTag(ImageTag.get());
+        container.getDockerImageName();
         var labels = labelsOf(container);
 
         Thread.currentThread().interrupt();
@@ -615,7 +658,7 @@ class ContainerTest {
     }
 
     // An error is no failure that the start handles, so it passes it on as it
-    // is, although the start does not run on the thread of the caller.
+    // is.
     @Test
     void passesOnAnErrorThatEndsTheStart() {
         var error = new AssertionError("broken");
