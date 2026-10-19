@@ -114,7 +114,7 @@ try (var client = new Client(baseUrl, apiToken)) {
 }
 ```
 
-Closing the client ends everything it is doing at once: requests that are running and streams that are open end with a `CancellationException`, as if they had been aborted. A write that was sent already ends with an `OutcomeUnknownException` instead, whose cause is the `CancellationException`, since the server may have stored it nonetheless, see [Knowing Whether a Write Was Stored](#knowing-whether-a-write-was-stored). Every request afterwards throws an `IllegalStateException`.
+Closing the client ends everything it is doing at once: requests that are running and streams that are open end with a `CancellationException`, as if they had been aborted. A write that the client has started to send ends with an `OutcomeUnknownException` instead, whose cause is the `CancellationException`, since the server may have stored it nevertheless, see [Knowing Whether a Write Was Stored](#knowing-whether-a-write-was-stored). Every request afterwards throws an `IllegalStateException`.
 
 ### Writing Events
 
@@ -741,7 +741,7 @@ If verifying an event fails, the client throws a `HashVerificationFailedExceptio
 
 If a request receives nothing from the server for the [stall timeout](#configuring-the-stall-timeout), 30 seconds by default, e.g. because the server can not be reached, or because a proxy keeps the connection open but no longer passes anything on, the client closes the connection, and the request ends with a `ConnectionStalledException`.
 
-If a request is aborted, because its thread is interrupted, because its stream is closed from somewhere else, or because the client is closed, it ends with a `CancellationException`. A write that was sent already ends with an `OutcomeUnknownException` instead, whose cause is the `CancellationException`, see [Knowing Whether a Write Was Stored](#knowing-whether-a-write-was-stored).
+If a request is aborted, because its thread is interrupted, because its stream is closed from somewhere else, or because the client is closed, it ends with a `CancellationException`. A write that the client has started to send ends with an `OutcomeUnknownException` instead, whose cause is the `CancellationException`, see [Knowing Whether a Write Was Stored](#knowing-whether-a-write-was-stored).
 
 If the server ends a stream before it is complete, e.g. because of a failure it can not report within the stream, the stream ends with an `EventSourcingDbException`. This includes observing events, which never ends on its own.
 
