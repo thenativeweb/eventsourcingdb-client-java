@@ -9,13 +9,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.thenativeweb.eventsourcingdb.ClientOptions;
 import io.thenativeweb.eventsourcingdb.EventCandidate;
 import java.net.URI;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.ContainerLaunchException;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.WaitStrategy;
+import org.testcontainers.containers.wait.strategy.WaitStrategyTarget;
 import tools.jackson.databind.PropertyNamingStrategies;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -165,24 +169,58 @@ class ContainerTest {
                 .toList();
     }
 
+    // A wait for pings that fails the given number of times while the
+    // container runs, as if its port were not reachable from the host, and
+    // then waits as the container does. It notes the containers it waited
+    // for, and the failures it threw.
+    private static final class UnreachableWait implements WaitStrategy {
+        private final WaitStrategy ping;
+        private final int failureCount;
+        final List<String> containerIds = new ArrayList<>();
+        final List<ContainerLaunchException> failures = new ArrayList<>();
+
+        UnreachableWait(WaitStrategy ping, int failureCount) {
+            this.ping = ping;
+            this.failureCount = failureCount;
+        }
+
+        @Override
+        public void waitUntilReady(WaitStrategyTarget target) {
+            containerIds.add(target.getContainerId());
+            if (containerIds.size() > failureCount) {
+                ping.waitUntilReady(target);
+                return;
+            }
+
+            assertTrue(target.isRunning());
+            var failure = new ContainerLaunchException("the database did not become reachable");
+            failures.add(failure);
+            throw failure;
+        }
+
+        @Override
+        public WaitStrategy withStartupTimeout(Duration startupTimeout) {
+            return this;
+        }
+    }
+
+    // Docker Desktop sometimes does not make the port of a container
+    // reachable from the host. The container keeps running, but its wait
+    // fails, as it does here twice. Testcontainers stops a container whose
+    // wait fails before it reports the failure.
     @Test
     void replacesAContainerWhoseDatabaseDoesNotBecomeReachable() {
-        var containerIds = new ArrayList<String>();
         var container = new Container().withImageTag(ImageTag.get());
-
-        // Docker Desktop sometimes does not make the port of a container
-        // reachable from the host. The container keeps running, but starting
-        // it fails, as it does here twice.
-        container.starter = self -> {
-            self.startOnce();
-            containerIds.add(self.getContainerId());
-            if (containerIds.size() < 3) {
-                throw new ContainerLaunchException("the database did not become reachable");
-            }
+        var wait = new AtomicReference<UnreachableWait>();
+        container.pingWait = port -> {
+            var unreachableWait = new UnreachableWait(new Container().pingWait.apply(port), 2);
+            wait.compareAndSet(null, unreachableWait);
+            return wait.get();
         };
 
         container.start();
         try {
+            var containerIds = wait.get().containerIds;
             assertEquals(3, containerIds.size());
             assertEquals(List.of(containerIds.get(2)), existing(containerIds));
             container.getClient().ping();
@@ -193,27 +231,48 @@ class ContainerTest {
 
     @Test
     void givesUpAfterThreeAttemptsAndSaysWhy() {
-        var containerIds = new ArrayList<String>();
-        var failures = new ArrayList<ContainerLaunchException>();
         var container = new Container().withImageTag(ImageTag.get());
-
-        container.starter = self -> {
-            self.startOnce();
-            containerIds.add(self.getContainerId());
-            var failure = new ContainerLaunchException("the database did not become reachable");
-            failures.add(failure);
-            throw failure;
-        };
+        var wait = new UnreachableWait(new Container().pingWait.apply(3000), 3);
+        container.pingWait = port -> wait;
 
         var exception = assertThrows(IllegalStateException.class, container::start);
 
         assertEquals(
                 "failed to start container, the database did not become reachable in 3 attempts",
                 exception.getMessage());
-        assertEquals(failures.getLast(), exception.getCause());
-        assertEquals(3, containerIds.size());
-        assertEquals(List.of(), existing(containerIds));
+        assertTrue(causesOf(exception).contains(wait.failures.getLast()));
+        assertEquals(3, wait.containerIds.size());
+        assertEquals(List.of(), existing(wait.containerIds));
         assertFalse(container.isRunning());
+    }
+
+    private static List<Throwable> causesOf(Throwable exception) {
+        var causes = new ArrayList<Throwable>();
+        for (var cause = exception.getCause(); cause != null; cause = cause.getCause()) {
+            causes.add(cause);
+        }
+        return causes;
+    }
+
+    // A startup timeout that is set on the container applies to its wait for
+    // pings.
+    @Test
+    void passesAStartupTimeoutOnToTheWaitForPings() {
+        var timeouts = new ArrayList<Duration>();
+        var container = new Container();
+        var wait = container.new NotingWait(new WaitStrategy() {
+            @Override
+            public void waitUntilReady(WaitStrategyTarget target) {}
+
+            @Override
+            public WaitStrategy withStartupTimeout(Duration startupTimeout) {
+                timeouts.add(startupTimeout);
+                return this;
+            }
+        });
+
+        assertEquals(wait, wait.withStartupTimeout(Duration.ofSeconds(30)));
+        assertEquals(List.of(Duration.ofSeconds(30)), timeouts);
     }
 
     @Test

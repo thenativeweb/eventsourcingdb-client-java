@@ -14,9 +14,12 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.containers.wait.strategy.WaitStrategy;
+import org.testcontainers.containers.wait.strategy.WaitStrategyTarget;
 import org.testcontainers.images.builder.Transferable;
 import org.testcontainers.utility.DockerImageName;
 
@@ -55,6 +58,16 @@ public final class Container extends GenericContainer<Container> {
     // Starts the container once. It is a field only so that tests can replace
     // it.
     Consumer<Container> starter = Container::startOnce;
+
+    // Waits until the database answers pings on the given port inside the
+    // container. It is a field only so that tests can replace it.
+    Function<Integer, WaitStrategy> pingWait =
+            port -> Wait.forHttp("/api/v1/ping").forPort(port).withStartupTimeout(Duration.ofSeconds(10));
+
+    // Whether the container was running when the wait for pings failed. Once
+    // the wait fails, Testcontainers stops the container before it reports
+    // the failure, so this can only be told while the wait fails.
+    private volatile boolean wasUnreachableWhileRunning;
 
     /**
      * Creates a container that uses the {@code latest} tag of the official EventSourcingDB image, port 3000 inside the
@@ -124,7 +137,7 @@ public final class Container extends GenericContainer<Container> {
                 String.valueOf(internalPort)));
 
         withExposedPorts(internalPort);
-        waitingFor(Wait.forHttp("/api/v1/ping").forPort(internalPort).withStartupTimeout(Duration.ofSeconds(10)));
+        waitingFor(new NotingWait(pingWait.apply(internalPort)));
 
         if (signingKeyPair != null) {
             withCopyToContainer(Transferable.of(pem(signingKeyPair.getPrivate()), 0777), SIGNING_KEY_PATH);
@@ -157,19 +170,19 @@ public final class Container extends GenericContainer<Container> {
     @Override
     public void start() {
         for (var attempt = 1; ; attempt++) {
+            wasUnreachableWhileRunning = false;
             try {
                 starter.accept(this);
                 return;
             } catch (RuntimeException ex) {
-                // A container that keeps running although starting it failed
+                // A container that was running when its wait for pings failed
                 // is one whose database can not be reached, so it is replaced
                 // by a new one. Every other failure is thrown at once. Either
                 // way, the container that failed to start is removed, so that
                 // it is not left behind.
-                var isRunning = isRunning();
                 stop();
 
-                if (!isRunning) {
+                if (!wasUnreachableWhileRunning) {
                     throw ex;
                 }
                 if (attempt == MAX_START_ATTEMPTS) {
@@ -185,6 +198,32 @@ public final class Container extends GenericContainer<Container> {
 
     void startOnce() {
         super.start();
+    }
+
+    // NotingWait waits as the given wait does, and notes whether the
+    // container was still running if that wait fails.
+    final class NotingWait implements WaitStrategy {
+        private final WaitStrategy wait;
+
+        NotingWait(WaitStrategy wait) {
+            this.wait = wait;
+        }
+
+        @Override
+        public void waitUntilReady(WaitStrategyTarget target) {
+            try {
+                wait.waitUntilReady(target);
+            } catch (RuntimeException ex) {
+                wasUnreachableWhileRunning = target.isRunning();
+                throw ex;
+            }
+        }
+
+        @Override
+        public WaitStrategy withStartupTimeout(Duration startupTimeout) {
+            wait.withStartupTimeout(startupTimeout);
+            return this;
+        }
     }
 
     /**
