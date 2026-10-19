@@ -29,6 +29,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
@@ -37,6 +38,7 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.images.builder.Transferable;
 import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.utility.DockerStatus;
+import org.testcontainers.utility.TestcontainersConfiguration;
 
 /**
  * An EventSourcingDB instance in a Docker container, for integration tests.
@@ -86,6 +88,12 @@ public final class Container extends GenericContainer<Container> {
     // background, e.g. removing a container that Docker is still creating.
     static final Duration INTERRUPT_GRACE_PERIOD = Duration.ofSeconds(5);
 
+    // How long start() and stop() wait at most for what an interrupted start
+    // still does in the background. That leaves Docker time to answer a call
+    // that is still pending, and Testcontainers time for its own fixed waits,
+    // e.g. the one for the port of a container.
+    static final Duration BACKGROUND_START_LIMIT = Duration.ofSeconds(30);
+
     private int internalPort = 3000;
     private String apiToken = "secret";
     private @Nullable KeyPair signingKeyPair;
@@ -102,6 +110,21 @@ public final class Container extends GenericContainer<Container> {
     // Removes the containers that carry the label of the attempt with the
     // given id. It is a field only so that tests can replace it.
     Consumer<String> containerRemover = this::removeContainersWithLabel;
+
+    // Tells whether the environment allows Testcontainers to reuse
+    // containers. It is a field only so that tests can replace it, as the
+    // environment can not change while they run.
+    BooleanSupplier environmentSupportsReuse =
+            () -> TestcontainersConfiguration.getInstance().environmentSupportsReuse();
+
+    // The latest start, which may still run in the background after the
+    // caller was interrupted.
+    private CompletableFuture<Optional<RuntimeException>> backgroundStart =
+            CompletableFuture.completedFuture(Optional.empty());
+
+    // The thread that runs the latest start, so that stop() can tell a call
+    // of Testcontainers from within that start.
+    private volatile @Nullable Thread startThread;
 
     /**
      * Creates a container that uses the {@code latest} tag of the official EventSourcingDB image, port 3000 inside the
@@ -216,11 +239,14 @@ public final class Container extends GenericContainer<Container> {
      * replaced by a new one, up to three containers in total. If the container exits before the instance answers
      * pings, or if Docker fails, the start fails at once. A container that exits before Docker publishes its port
      * fails only once Testcontainers stops waiting for the port, which takes about five seconds. Either way, the
-     * containers of a start that failed are removed.
+     * containers of a start that failed are removed. While Testcontainers reuses containers, as
+     * {@link #withReuse(boolean)} and the environment ask for, the start neither labels, nor replaces, nor removes a
+     * container of its own accord, just as Testcontainers does not.
      *
      * <p>If the calling thread is interrupted before the instance answers pings, the start gives up within five
      * seconds, and throws an {@link IllegalStateException}, and the interrupt status stays set. Containers that the
-     * start has not removed by then, e.g. because Docker is still creating one, it removes in the background.
+     * start has not removed by then, e.g. because Docker is still creating one, it removes in the background, which a
+     * following call of {@code start} or {@link #stop()} waits for.
      *
      * @throws IllegalStateException if the database did not become reachable in any of three containers
      * @throws RuntimeException if the container does not start for another reason, e.g. because the image does not
@@ -229,29 +255,46 @@ public final class Container extends GenericContainer<Container> {
      */
     @Override
     public void start() {
+        awaitBackgroundStart();
+
+        // A thread that is interrupted already does not even pull the image.
+        if (Thread.currentThread().isInterrupted()) {
+            throw interrupted(new InterruptedException());
+        }
+
         // The start runs on a thread of its own, so that an interrupt of the
         // caller does not cut a call to Docker short: Docker might still create
         // a container for a call that was cut short, after the start looked
         // for the containers to remove. Instead, the interrupt cancels the
         // start, and the caller waits for it to give up, which it finishes in
-        // the background if that takes longer than the grace period.
+        // the background if that takes longer than the grace period. The caller
+        // waits for a copy of the start, which the grace period may complete,
+        // so that the start itself tells when the background is done.
         var interruption = new AtomicReference<@Nullable InterruptedException>();
-        var started = CompletableFuture.supplyAsync(() -> startAttempts(interruption), Container::runOnThreadOfItsOwn);
+        backgroundStart = CompletableFuture.supplyAsync(() -> startAttempts(interruption), this::runOnThreadOfItsOwn);
+        var started = backgroundStart.copy();
 
-        Optional<RuntimeException> failure;
+        Optional<RuntimeException> failure = null;
+        var wasInterrupted = false;
         try {
-            failure = started.get();
-        } catch (InterruptedException ex) {
-            interruption.set(ex);
-            failure = started.completeOnTimeout(
-                            Optional.of(interrupted(ex)), INTERRUPT_GRACE_PERIOD.toNanos(), TimeUnit.NANOSECONDS)
-                    .join();
-            Thread.currentThread().interrupt();
-        } catch (ExecutionException ex) {
-            // The start returns every failure it handles, so only an error
-            // that it does not handle ends up here, which is passed on as
-            // CompletableFuture.join() would pass it on.
-            throw new CompletionException(ex.getCause());
+            while (failure == null) {
+                try {
+                    failure = started.get();
+                } catch (InterruptedException ex) {
+                    interruption.set(ex);
+                    wasInterrupted = true;
+                    started.completeOnTimeout(
+                            Optional.of(interrupted(ex)), INTERRUPT_GRACE_PERIOD.toNanos(), TimeUnit.NANOSECONDS);
+                } catch (ExecutionException ex) {
+                    // The start returns every exception it handles, so only an
+                    // error ends up here, which is passed on as it is.
+                    throw (Error) Objects.requireNonNull(ex.getCause());
+                }
+            }
+        } finally {
+            if (wasInterrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
 
         failure.ifPresent(startFailure -> {
@@ -259,62 +302,111 @@ public final class Container extends GenericContainer<Container> {
         });
     }
 
-    private static void runOnThreadOfItsOwn(Runnable task) {
-        Thread.ofPlatform().daemon().name("eventsourcingdb-container-start").start(task);
+    /**
+     * Stops and removes the container.
+     *
+     * <p>If a start that was interrupted still removes containers in the background, this waits for it first.
+     */
+    @Override
+    public void stop() {
+        // Testcontainers stops a container whose start failed itself, from
+        // within the start, which must not wait for itself.
+        if (Thread.currentThread() != startThread) {
+            awaitBackgroundStart();
+        }
+
+        super.stop();
+    }
+
+    // Waits until the latest start is done, for a limit of time at most, so
+    // that what follows a start that was interrupted does not race with what
+    // the start still does in the background.
+    private void awaitBackgroundStart() {
+        backgroundStart
+                .handle((failure, error) -> true)
+                .completeOnTimeout(true, BACKGROUND_START_LIMIT.toNanos(), TimeUnit.NANOSECONDS)
+                .join();
+    }
+
+    private void runOnThreadOfItsOwn(Runnable task) {
+        var thread = Thread.ofPlatform()
+                .daemon()
+                .name("eventsourcingdb-container-start")
+                .unstarted(task);
+        startThread = thread;
+        thread.start();
     }
 
     // Starts containers until the database in one of them becomes reachable,
     // and returns the failure otherwise, or once the given interruption of
     // the caller is set. It pulls the image before the first attempt, so that
     // pulling it does not count toward the startup timeout. Testcontainers
-    // keeps the image it resolved, so the attempts do not pull it again.
+    // keeps the image it resolved, so the attempts do not pull it again. It
+    // returns every exception, also one that it does not expect, so that only
+    // errors end the start otherwise.
     private Optional<RuntimeException> startAttempts(AtomicReference<@Nullable InterruptedException> interruption) {
         try {
             getDockerImageName();
+
+            var interruptionWhilePulling = interruption.get();
+            if (interruptionWhilePulling != null) {
+                return Optional.of(interrupted(interruptionWhilePulling));
+            }
+
+            var isReused = isShouldBeReused() && environmentSupportsReuse.getAsBoolean();
+            var removalFailures = new ArrayList<RuntimeException>();
+            for (var attemptNumber = 1; ; attemptNumber++) {
+                var currentAttempt = new Attempt(startupTimeout, () -> interruption.get() != null);
+                var failure = startContainerOf(currentAttempt, isReused);
+                if (failure.isEmpty()) {
+                    return Optional.empty();
+                }
+
+                // Testcontainers' reuse keeps containers on purpose, so the
+                // start leaves removing them to Testcontainers then.
+                if (!isReused) {
+                    removeContainersOf(currentAttempt).ifPresent(removalFailures::add);
+                }
+
+                // Once the caller was interrupted, the start gives up, whatever
+                // else made the attempt fail.
+                var interruptionOfCaller = interruption.get();
+                if (interruptionOfCaller != null) {
+                    return failed(interrupted(interruptionOfCaller), removalFailures);
+                }
+
+                var exitLog = currentAttempt.exitLog;
+                if (exitLog != null) {
+                    return failed(exited(exitLog, failure.get()), removalFailures);
+                }
+                if (isReused || !currentAttempt.isUnreachable()) {
+                    return failed(dockerFailed(failure.get()), removalFailures);
+                }
+                if (attemptNumber == MAX_START_ATTEMPTS) {
+                    return failed(unreachable(failure.get()), removalFailures);
+                }
+            }
         } catch (RuntimeException ex) {
             return Optional.of(dockerFailed(ex));
-        }
-
-        var removalFailures = new ArrayList<RuntimeException>();
-        for (var attemptNumber = 1; ; attemptNumber++) {
-            var currentAttempt = new Attempt(startupTimeout, () -> interruption.get() != null);
-            var failure = startContainerOf(currentAttempt);
-            if (failure.isEmpty()) {
-                return Optional.empty();
-            }
-
-            removeContainersOf(currentAttempt).ifPresent(removalFailures::add);
-
-            // Once the caller was interrupted, the start gives up, whatever
-            // else made the attempt fail.
-            var interruptionOfCaller = interruption.get();
-            if (interruptionOfCaller != null) {
-                return failed(interrupted(interruptionOfCaller), removalFailures);
-            }
-
-            var exitLog = currentAttempt.exitLog;
-            if (exitLog != null) {
-                return failed(exited(exitLog, failure.get()), removalFailures);
-            }
-            if (!currentAttempt.isUnreachable()) {
-                return failed(dockerFailed(failure.get()), removalFailures);
-            }
-            if (attemptNumber == MAX_START_ATTEMPTS) {
-                return failed(unreachable(failure.get()), removalFailures);
-            }
         }
     }
 
     // Starts the container of the given attempt with Testcontainers, and
-    // returns the failure if that fails.
-    private Optional<RuntimeException> startContainerOf(Attempt currentAttempt) {
+    // returns the failure if that fails. A container that Testcontainers
+    // reuses gets no label, which would keep Testcontainers from finding it
+    // again. Testcontainers throws checked exceptions without declaring them,
+    // e.g. if a container it depends on fails, so the failure is any
+    // exception.
+    private Optional<Exception> startContainerOf(Attempt currentAttempt, boolean isReused) {
         attempt = currentAttempt;
-        withLabel(START_LABEL, currentAttempt.id);
+        if (!isReused) {
+            withLabel(START_LABEL, currentAttempt.id);
+        }
 
         try {
             super.start();
             return Optional.empty();
-        } catch (RuntimeException ex) {
+        } catch (Exception ex) {
             return Optional.of(ex);
         } finally {
             attempt = null;
@@ -422,7 +514,7 @@ public final class Container extends GenericContainer<Container> {
         return Optional.of(failure);
     }
 
-    private IllegalStateException unreachable(RuntimeException cause) {
+    private IllegalStateException unreachable(Exception cause) {
         return new IllegalStateException(
                 "failed to start the container, the database did not become reachable within "
                         + seconds(startupTimeout)
@@ -436,7 +528,7 @@ public final class Container extends GenericContainer<Container> {
         return new IllegalStateException("failed to start the container: interrupted", cause);
     }
 
-    private static ContainerLaunchException exited(String exitLog, RuntimeException cause) {
+    private static ContainerLaunchException exited(String exitLog, Exception cause) {
         return new ContainerLaunchException(
                 "failed to start the container, it exited before the database became reachable: " + exitLog, cause);
     }
@@ -444,7 +536,7 @@ public final class Container extends GenericContainer<Container> {
     // Names the error of Docker, which Testcontainers wraps in exceptions of
     // its own, as the innermost cause. Docker ends its errors with a line
     // break, which the message leaves out.
-    private static ContainerLaunchException dockerFailed(RuntimeException failure) {
+    private static ContainerLaunchException dockerFailed(Exception failure) {
         Throwable dockerError = failure;
         for (var cause = failure.getCause(); cause != null; cause = cause.getCause()) {
             dockerError = cause;

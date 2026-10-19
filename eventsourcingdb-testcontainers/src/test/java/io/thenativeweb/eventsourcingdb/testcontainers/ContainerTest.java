@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -21,14 +22,17 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
@@ -41,6 +45,10 @@ import tools.jackson.databind.PropertyNamingStrategies;
 import tools.jackson.databind.json.JsonMapper;
 
 class ContainerTest {
+    // The label that tells the containers of a test of reuse apart, so that
+    // they reuse only each other.
+    private static final String REUSE_TEST_LABEL = "io.eventsourcingdb.client-java.reuse-test";
+
     private static final String EXITED_PREFIX =
             "failed to start the container, it exited before the database became reachable: ";
 
@@ -210,6 +218,7 @@ class ContainerTest {
         var exception = assertThrows(IllegalStateException.class, container::start);
         var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
 
+        assertEquals(IllegalStateException.class, exception.getClass());
         assertEquals(
                 "failed to start the container, the database did not become reachable within 1.5s in any of 3"
                         + " containers",
@@ -307,6 +316,7 @@ class ContainerTest {
                         + innermostCauseOf(exception).getMessage().stripTrailing(),
                 exception.getMessage());
         assertTrue(exception.getMessage().contains("Invalid container name"), exception::getMessage);
+        assertEquals(ContainerLaunchException.class, exception.getClass());
         assertEquals(1, labels.size());
         assertEquals(List.of(), existing(labels));
         assertFalse(container.isRunning());
@@ -409,18 +419,27 @@ class ContainerTest {
 
     // Docker takes longer than the grace period to create the container here,
     // and creates it only after the start gave up, so the start removes it in
-    // the background.
+    // the background. Starting again waits for that.
     @Test
-    void givesUpOnAnInterruptWhileDockerCreatesTheContainerAndRemovesItLater() throws TimeoutException {
+    void givesUpOnAnInterruptWhileDockerCreatesTheContainerAndRemovesItLater() {
         var caller = Thread.currentThread();
         var interruptedAt = new AtomicLong();
-        var logEnd = new WaitingConsumer();
-        var container = new Container().withImageTag(ImageTag.get()).withLogConsumer(logEnd);
+        var hasFirstCreateGoneOn = new AtomicBoolean();
+        var hadFirstCreateGoneOnAtSecond = new AtomicBoolean();
+        var firstContainersAtSecond = new AtomicReference<List<String>>();
+        var container = new Container().withImageTag(ImageTag.get());
         var labels = labelsOf(container);
         container.withCreateContainerCmdModifier(command -> {
-            interruptedAt.set(System.nanoTime());
-            caller.interrupt();
-            pause(Container.INTERRUPT_GRACE_PERIOD.plusSeconds(2));
+            if (labels.size() == 1) {
+                interruptedAt.set(System.nanoTime());
+                caller.interrupt();
+                pause(Container.INTERRUPT_GRACE_PERIOD.plusSeconds(2));
+                hasFirstCreateGoneOn.set(true);
+                return;
+            }
+
+            hadFirstCreateGoneOnAtSecond.set(hasFirstCreateGoneOn.get());
+            firstContainersAtSecond.set(existing(labels.subList(0, 1)));
         });
 
         IllegalStateException exception;
@@ -432,22 +451,154 @@ class ContainerTest {
         }
         var elapsed = Duration.ofNanos(System.nanoTime() - interruptedAt.get());
 
+        assertEquals(IllegalStateException.class, exception.getClass());
         assertEquals("failed to start the container: interrupted", exception.getMessage());
         assertInstanceOf(InterruptedException.class, exception.getCause());
         assertTrue(wasInterrupted);
         assertTrue(elapsed.compareTo(Container.INTERRUPT_GRACE_PERIOD) >= 0, elapsed::toString);
         assertTrue(elapsed.compareTo(Container.INTERRUPT_GRACE_PERIOD.plusSeconds(2)) < 0, elapsed::toString);
 
-        // The log of the container ends once Testcontainers removed it, which
-        // shows that Docker did create it.
-        logEnd.waitUntilEnd(60, TimeUnit.SECONDS);
-        var deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
-        while (!existing(labels).isEmpty() && System.nanoTime() - deadline < 0) {
-            pause(Duration.ofMillis(100));
+        container.start();
+        try {
+            assertTrue(hadFirstCreateGoneOnAtSecond.get());
+            assertEquals(List.of(), firstContainersAtSecond.get());
+            container.getClient().ping();
+        } finally {
+            container.stop();
         }
 
-        assertEquals(1, labels.size());
+        assertEquals(2, labels.size());
         assertEquals(List.of(), existing(labels));
+    }
+
+    // Pulling the image takes longer than the grace period here. The start
+    // goes on pulling in the background, but creates no container after it,
+    // and stopping waits for that.
+    @Test
+    void givesUpOnAnInterruptWhileItPullsTheImageWithoutCreatingAContainer() {
+        var caller = Thread.currentThread();
+        var pull = CompletableFuture.supplyAsync(
+                () -> "thenativeweb/eventsourcingdb:" + ImageTag.get(),
+                CompletableFuture.delayedExecutor(
+                        Container.INTERRUPT_GRACE_PERIOD.plusSeconds(3).toMillis(), TimeUnit.MILLISECONDS));
+        var container = new Container();
+        container.setImage(pull);
+        var labels = labelsOf(container);
+        CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS).execute(caller::interrupt);
+
+        IllegalStateException exception;
+        boolean wasInterrupted;
+        try {
+            exception = assertThrows(IllegalStateException.class, container::start);
+        } finally {
+            wasInterrupted = Thread.interrupted();
+        }
+
+        assertEquals("failed to start the container: interrupted", exception.getMessage());
+        assertTrue(wasInterrupted);
+        assertFalse(pull.isDone());
+
+        container.stop();
+
+        assertTrue(pull.isDone());
+        assertEquals(List.of(), labels);
+    }
+
+    @Test
+    void givesUpAtOnceIfTheThreadIsInterruptedAlready() {
+        var container = new Container();
+        container.setImage(CompletableFuture.supplyAsync(
+                () -> "thenativeweb/eventsourcingdb:" + ImageTag.get(),
+                CompletableFuture.delayedExecutor(1, TimeUnit.MINUTES)));
+        var labels = labelsOf(container);
+
+        Thread.currentThread().interrupt();
+        var startedAt = System.nanoTime();
+        IllegalStateException exception;
+        boolean wasInterrupted;
+        try {
+            exception = assertThrows(IllegalStateException.class, container::start);
+        } finally {
+            wasInterrupted = Thread.interrupted();
+        }
+        var elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+        assertEquals("failed to start the container: interrupted", exception.getMessage());
+        assertInstanceOf(InterruptedException.class, exception.getCause());
+        assertTrue(wasInterrupted);
+        assertTrue(elapsed.compareTo(Duration.ofSeconds(1)) < 0, elapsed::toString);
+        assertEquals(List.of(), labels);
+    }
+
+    // Testcontainers finds a container to reuse by the configuration of the
+    // container, which a label of each attempt would make differ every time.
+    @Test
+    void leavesAContainerThatTestcontainersReusesToTestcontainers() {
+        var reuseId = UUID.randomUUID().toString();
+        var first = reusableContainer(reuseId);
+        var second = reusableContainer(reuseId);
+        var labels = labelsOf(second);
+
+        first.start();
+        try {
+            second.start();
+
+            assertEquals(first.getContainerId(), second.getContainerId());
+            assertEquals(Collections.singletonList(null), labels);
+            assertFalse(DockerClientFactory.instance()
+                    .client()
+                    .inspectContainerCmd(first.getContainerId())
+                    .exec()
+                    .getConfig()
+                    .getLabels()
+                    .containsKey(Container.START_LABEL));
+            second.getClient().ping();
+        } finally {
+            first.stop();
+            second.stop();
+        }
+
+        assertEquals(List.of(), reusableContainers(reuseId));
+    }
+
+    // Testcontainers removes a reused container whose start fails on its own,
+    // and does not replace it.
+    @Test
+    void neitherReplacesNorRemovesAContainerThatTestcontainersReuses() {
+        var reuseId = UUID.randomUUID().toString();
+        var container = reusableContainer(reuseId).withStartupTimeout(Duration.ofMillis(1500));
+        var labels = labelsOf(container);
+        container.withCreateContainerCmdModifier(ContainerTest::listenOnAnotherPort);
+
+        var exception = assertThrows(ContainerLaunchException.class, container::start);
+
+        assertEquals(ContainerLaunchException.class, exception.getClass());
+        assertEquals(
+                "failed to start the container: the database did not become reachable in time", exception.getMessage());
+        assertEquals(Collections.singletonList(null), labels);
+        assertEquals(List.of(), reusableContainers(reuseId));
+    }
+
+    // Asked for reuse, Testcontainers does not reuse containers unless the
+    // environment allows it, so the start labels, replaces, and removes them
+    // as usual.
+    @Test
+    void labelsAContainerThatAsksForReuseIfTheEnvironmentDoesNotAllowIt() {
+        var reuseId = UUID.randomUUID().toString();
+        var container = reusableContainer(reuseId);
+        container.environmentSupportsReuse = () -> false;
+        var labels = labelsOf(container);
+
+        container.start();
+        try {
+            assertEquals(1, labels.size());
+            assertNotNull(labels.getFirst());
+            assertEquals(1, existing(labels).size());
+        } finally {
+            container.stop();
+        }
+
+        assertEquals(List.of(), reusableContainers(reuseId));
     }
 
     @Test
@@ -463,8 +614,8 @@ class ContainerTest {
         assertEquals("startup timeout must be positive", negativeException.getMessage());
     }
 
-    // An error is no failure that the start handles, so it passes it on, as
-    // the start does not run on the thread of the caller.
+    // An error is no failure that the start handles, so it passes it on as it
+    // is, although the start does not run on the thread of the caller.
     @Test
     void passesOnAnErrorThatEndsTheStart() {
         var error = new AssertionError("broken");
@@ -474,9 +625,9 @@ class ContainerTest {
             throw error;
         });
 
-        var exception = assertThrows(CompletionException.class, container::start);
+        var exception = assertThrows(AssertionError.class, container::start);
 
-        assertSame(error, exception.getCause());
+        assertSame(error, exception);
         assertEquals(1, labels.size());
         assertEquals(List.of(), existing(labels));
     }
@@ -518,6 +669,24 @@ class ContainerTest {
         container.withCreateContainerCmdModifier(
                 command -> labels.add(command.getLabels().get(Container.START_LABEL)));
         return labels;
+    }
+
+    // A container that asks Testcontainers for reuse, and that only containers
+    // with the same id of reuse match.
+    private static Container reusableContainer(String reuseId) {
+        return new Container().withImageTag(ImageTag.get()).withReuse(true).withLabel(REUSE_TEST_LABEL, reuseId);
+    }
+
+    private static List<String> reusableContainers(String reuseId) {
+        return DockerClientFactory.instance()
+                .client()
+                .listContainersCmd()
+                .withShowAll(true)
+                .withLabelFilter(Map.of(REUSE_TEST_LABEL, reuseId))
+                .exec()
+                .stream()
+                .map(container -> container.getId())
+                .toList();
     }
 
     private static void listenOnAnotherPort(CreateContainerCmd command) {

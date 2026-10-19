@@ -20,3 +20,9 @@ dependencies {
     api(project(":eventsourcingdb"))
     api(libs.testcontainers)
 }
+
+// Testcontainers reuses containers only if the environment allows it, which
+// the tests of reuse need. It affects only containers that ask for reuse.
+tasks.test {
+    environment("TESTCONTAINERS_REUSE_ENABLE", "true")
+}

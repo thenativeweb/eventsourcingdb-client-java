@@ -2,6 +2,7 @@ package io.thenativeweb.eventsourcingdb.testcontainers;
 
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntPredicate;
@@ -43,7 +44,9 @@ final class Attempt {
     String exitLog;
 
     Attempt(Duration startupTimeout, BooleanSupplier isCanceled) {
-        deadline = System.nanoTime() + startupTimeout.toNanos();
+        // Converting saturates, so that a startup timeout too long to count in
+        // nanoseconds does not fail.
+        deadline = System.nanoTime() + TimeUnit.NANOSECONDS.convert(startupTimeout);
         this.isCanceled = isCanceled;
     }
 
