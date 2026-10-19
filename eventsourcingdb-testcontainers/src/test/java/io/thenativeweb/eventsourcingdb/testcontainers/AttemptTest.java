@@ -21,7 +21,7 @@ class AttemptTest {
     // had published the port anew.
     @Test
     void readsThePortAnewForEveryPing() {
-        var attempt = new Attempt(ENOUGH_TIME);
+        var attempt = new Attempt(ENOUGH_TIME, () -> false);
         var observations = new ArrayList<>(List.of(
                 new Attempt.Observation(false, null),
                 new Attempt.Observation(false, 1001),
@@ -40,7 +40,7 @@ class AttemptTest {
 
     @Test
     void endsTheWaitIfTheContainerExits() {
-        var attempt = new Attempt(ENOUGH_TIME);
+        var attempt = new Attempt(ENOUGH_TIME, () -> false);
 
         assertThrows(
                 ContainerLaunchException.class,
@@ -51,7 +51,7 @@ class AttemptTest {
 
     @Test
     void endsTheWaitOnceTheStartupTimeoutRanOut() {
-        var attempt = new Attempt(Duration.ofMillis(300));
+        var attempt = new Attempt(Duration.ofMillis(300), () -> false);
         var pingCount = new int[] {0};
 
         var startedAt = System.nanoTime();
@@ -72,7 +72,7 @@ class AttemptTest {
     // counts.
     @Test
     void countsTheTimeBeforeTheWaitBegins() {
-        var attempt = new Attempt(Duration.ZERO);
+        var attempt = new Attempt(Duration.ZERO, () -> false);
 
         assertThrows(
                 ContainerLaunchException.class,
@@ -85,7 +85,7 @@ class AttemptTest {
     // at once, and does not count as running out of time.
     @Test
     void endsTheWaitAtOnceIfDockerFails() {
-        var attempt = new Attempt(ENOUGH_TIME);
+        var attempt = new Attempt(ENOUGH_TIME, () -> false);
         var dockerFailure = new IllegalStateException("Docker failed");
 
         var exception = assertThrows(
@@ -101,9 +101,31 @@ class AttemptTest {
         assertFalse(attempt.isUnreachable());
     }
 
+    // An interrupt of the caller cancels the start, which ends the wait
+    // without another look at the container, and does not count as running
+    // out of time.
+    @Test
+    void endsTheWaitAtOnceIfTheStartIsCanceled() {
+        var attempt = new Attempt(ENOUGH_TIME, () -> true);
+        var observationCount = new int[] {0};
+
+        assertThrows(
+                ContainerLaunchException.class,
+                () -> attempt.waitUntilReachable(
+                        () -> {
+                            observationCount[0]++;
+                            return new Attempt.Observation(false, 1001);
+                        },
+                        port -> true));
+
+        assertEquals(0, observationCount[0]);
+        assertFalse(attempt.hasRunOutOfTime);
+        assertFalse(attempt.isUnreachable());
+    }
+
     @Test
     void isUnreachableIfTheWaitRanOutOfTime() {
-        var attempt = new Attempt(ENOUGH_TIME);
+        var attempt = new Attempt(ENOUGH_TIME, () -> false);
         attempt.hasWaitBegun = true;
         attempt.wasRunning = true;
         attempt.hasRunOutOfTime = true;
@@ -115,7 +137,7 @@ class AttemptTest {
     // container after a fixed time of its own, before the wait begins.
     @Test
     void isUnreachableIfTheContainerWasRunningWhenTestcontainersGaveUpBeforeTheWait() {
-        var attempt = new Attempt(ENOUGH_TIME);
+        var attempt = new Attempt(ENOUGH_TIME, () -> false);
         attempt.wasRunning = true;
 
         assertTrue(attempt.isUnreachable());
@@ -123,7 +145,7 @@ class AttemptTest {
 
     @Test
     void isNotUnreachableIfTheContainerWasNotRunning() {
-        var attempt = new Attempt(ENOUGH_TIME);
+        var attempt = new Attempt(ENOUGH_TIME, () -> false);
 
         assertFalse(attempt.isUnreachable());
     }
@@ -132,7 +154,7 @@ class AttemptTest {
     // because Docker failed while the container was running.
     @Test
     void isNotUnreachableIfTheWaitEndedForAnotherReason() {
-        var attempt = new Attempt(ENOUGH_TIME);
+        var attempt = new Attempt(ENOUGH_TIME, () -> false);
         attempt.hasWaitBegun = true;
         attempt.wasRunning = true;
 
@@ -141,6 +163,6 @@ class AttemptTest {
 
     @Test
     void hasAnIdOfItsOwn() {
-        assertNotEquals(new Attempt(ENOUGH_TIME).id, new Attempt(ENOUGH_TIME).id);
+        assertNotEquals(new Attempt(ENOUGH_TIME, () -> false).id, new Attempt(ENOUGH_TIME, () -> false).id);
     }
 }

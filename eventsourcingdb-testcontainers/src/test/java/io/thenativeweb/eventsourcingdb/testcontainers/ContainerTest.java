@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -23,9 +24,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
@@ -369,34 +372,112 @@ class ContainerTest {
         assertEquals(List.of(), existing(labels));
     }
 
-    // An interrupt while Docker creates the container would cut that call
-    // short, so the start lets it finish, and keeps the interrupt for the
-    // caller.
+    // The database does not become reachable here, so the start is still
+    // waiting for it when the caller is interrupted.
     @Test
-    void keepsAnInterruptForTheCallerWithoutCuttingTheStartShort() {
+    void givesUpOnAnInterruptWhileItWaitsForTheDatabase() {
         var caller = Thread.currentThread();
-        var container = new Container().withImageTag(ImageTag.get());
+        var interruptedAt = new AtomicLong();
+        var container = new Container().withImageTag(ImageTag.get()).withStartupTimeout(Duration.ofMinutes(1));
         var labels = labelsOf(container);
-        container.withCreateContainerCmdModifier(command -> {
-            caller.interrupt();
-            pause(Duration.ofMillis(200));
-        });
+        container.withCreateContainerCmdModifier(ContainerTest::listenOnAnotherPort);
+        container.withCreateContainerCmdModifier(command -> CompletableFuture.delayedExecutor(2, TimeUnit.SECONDS)
+                .execute(() -> {
+                    interruptedAt.set(System.nanoTime());
+                    caller.interrupt();
+                }));
 
+        IllegalStateException exception;
         boolean wasInterrupted;
         try {
-            container.start();
+            exception = assertThrows(IllegalStateException.class, container::start);
         } finally {
             wasInterrupted = Thread.interrupted();
         }
+        var elapsed = Duration.ofNanos(System.nanoTime() - interruptedAt.get());
 
+        assertEquals("failed to start the container: interrupted", exception.getMessage());
+        assertInstanceOf(InterruptedException.class, exception.getCause());
+        assertTrue(wasInterrupted);
+        assertTrue(elapsed.compareTo(Container.INTERRUPT_GRACE_PERIOD) < 0, elapsed::toString);
+
+        // The start gave up within the grace period, so it removed the
+        // container before it returned, and did not replace it.
+        assertEquals(1, labels.size());
+        assertEquals(List.of(), existing(labels));
+    }
+
+    // Docker takes longer than the grace period to create the container here,
+    // and creates it only after the start gave up, so the start removes it in
+    // the background.
+    @Test
+    void givesUpOnAnInterruptWhileDockerCreatesTheContainerAndRemovesItLater() throws TimeoutException {
+        var caller = Thread.currentThread();
+        var interruptedAt = new AtomicLong();
+        var logEnd = new WaitingConsumer();
+        var container = new Container().withImageTag(ImageTag.get()).withLogConsumer(logEnd);
+        var labels = labelsOf(container);
+        container.withCreateContainerCmdModifier(command -> {
+            interruptedAt.set(System.nanoTime());
+            caller.interrupt();
+            pause(Container.INTERRUPT_GRACE_PERIOD.plusSeconds(2));
+        });
+
+        IllegalStateException exception;
+        boolean wasInterrupted;
         try {
-            assertTrue(wasInterrupted);
-            assertEquals(1, labels.size());
-            container.getClient().ping();
+            exception = assertThrows(IllegalStateException.class, container::start);
         } finally {
-            container.stop();
+            wasInterrupted = Thread.interrupted();
+        }
+        var elapsed = Duration.ofNanos(System.nanoTime() - interruptedAt.get());
+
+        assertEquals("failed to start the container: interrupted", exception.getMessage());
+        assertInstanceOf(InterruptedException.class, exception.getCause());
+        assertTrue(wasInterrupted);
+        assertTrue(elapsed.compareTo(Container.INTERRUPT_GRACE_PERIOD) >= 0, elapsed::toString);
+        assertTrue(elapsed.compareTo(Container.INTERRUPT_GRACE_PERIOD.plusSeconds(2)) < 0, elapsed::toString);
+
+        // The log of the container ends once Testcontainers removed it, which
+        // shows that Docker did create it.
+        logEnd.waitUntilEnd(60, TimeUnit.SECONDS);
+        var deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        while (!existing(labels).isEmpty() && System.nanoTime() - deadline < 0) {
+            pause(Duration.ofMillis(100));
         }
 
+        assertEquals(1, labels.size());
+        assertEquals(List.of(), existing(labels));
+    }
+
+    @Test
+    void rejectsAStartupTimeoutThatIsNotPositive() {
+        var container = new Container();
+
+        var zeroException =
+                assertThrows(IllegalArgumentException.class, () -> container.withStartupTimeout(Duration.ZERO));
+        assertEquals("startup timeout must be positive", zeroException.getMessage());
+
+        var negativeException = assertThrows(
+                IllegalArgumentException.class, () -> container.withStartupTimeout(Duration.ofSeconds(-1)));
+        assertEquals("startup timeout must be positive", negativeException.getMessage());
+    }
+
+    // An error is no failure that the start handles, so it passes it on, as
+    // the start does not run on the thread of the caller.
+    @Test
+    void passesOnAnErrorThatEndsTheStart() {
+        var error = new AssertionError("broken");
+        var container = new Container().withImageTag(ImageTag.get());
+        var labels = labelsOf(container);
+        container.withCreateContainerCmdModifier(command -> {
+            throw error;
+        });
+
+        var exception = assertThrows(CompletionException.class, container::start);
+
+        assertSame(error, exception.getCause());
+        assertEquals(1, labels.size());
         assertEquals(List.of(), existing(labels));
     }
 

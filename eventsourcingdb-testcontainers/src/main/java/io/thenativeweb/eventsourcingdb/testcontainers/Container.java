@@ -26,6 +26,9 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
@@ -77,6 +80,11 @@ public final class Container extends GenericContainer<Container> {
     // How long a ping of the database may take before it counts as
     // unanswered.
     private static final Duration PING_TIMEOUT = Duration.ofSeconds(1);
+
+    // How long start() waits at most for the start to give up once the caller
+    // was interrupted, before it returns, and leaves the rest to the
+    // background, e.g. removing a container that Docker is still creating.
+    static final Duration INTERRUPT_GRACE_PERIOD = Duration.ofSeconds(5);
 
     private int internalPort = 3000;
     private String apiToken = "secret";
@@ -154,9 +162,15 @@ public final class Container extends GenericContainer<Container> {
      *
      * @param startupTimeout how long to wait for the instance in a container to answer pings
      * @return this container
+     * @throws IllegalArgumentException if the startup timeout is zero or negative
      */
     @Override
     public Container withStartupTimeout(Duration startupTimeout) {
+        // A startup timeout of zero or less would fail every attempt at once.
+        if (startupTimeout.isZero() || startupTimeout.isNegative()) {
+            throw new IllegalArgumentException("startup timeout must be positive");
+        }
+
         this.startupTimeout = startupTimeout;
         return this;
     }
@@ -200,29 +214,49 @@ public final class Container extends GenericContainer<Container> {
      * <p>Docker sometimes publishes the port of a container late, or does not make it reachable from the host at all.
      * If the container runs, but the instance does not answer pings within the startup timeout, the container is
      * replaced by a new one, up to three containers in total. If the container exits before the instance answers
-     * pings, or if Docker fails, the start fails at once. Either way, the containers of a start that failed are
-     * removed.
+     * pings, or if Docker fails, the start fails at once. A container that exits before Docker publishes its port
+     * fails only once Testcontainers stops waiting for the port, which takes about five seconds. Either way, the
+     * containers of a start that failed are removed.
      *
-     * <p>An interrupt does not cut the start short. The interrupt status stays set for the caller.
+     * <p>If the calling thread is interrupted before the instance answers pings, the start gives up within five
+     * seconds, and throws an {@link IllegalStateException}, and the interrupt status stays set. Containers that the
+     * start has not removed by then, e.g. because Docker is still creating one, it removes in the background.
      *
-     * @throws IllegalStateException if the instance did not answer pings in any of three containers
-     * @throws ContainerLaunchException if the container exited before the instance answered pings, or if Docker
-     *     failed, e.g. because the image does not exist
+     * @throws IllegalStateException if the database did not become reachable in any of three containers
+     * @throws RuntimeException if the container does not start for another reason, e.g. because the image does not
+     *     exist
      * @see #withStartupTimeout(Duration)
      */
     @Override
     public void start() {
-        // The start runs on a thread of its own, which the caller can not
-        // interrupt: an interrupt would cut a call to Docker short, and Docker
-        // might still create a container for a call that was cut short, after
-        // the start looked for the containers to remove. join() waits for the
-        // thread even if the caller is interrupted, and keeps the interrupt
-        // status for the caller.
-        CompletableFuture.supplyAsync(this::startAttempts, Container::runOnThreadOfItsOwn)
-                .join()
-                .ifPresent(failure -> {
-                    throw failure;
-                });
+        // The start runs on a thread of its own, so that an interrupt of the
+        // caller does not cut a call to Docker short: Docker might still create
+        // a container for a call that was cut short, after the start looked
+        // for the containers to remove. Instead, the interrupt cancels the
+        // start, and the caller waits for it to give up, which it finishes in
+        // the background if that takes longer than the grace period.
+        var interruption = new AtomicReference<@Nullable InterruptedException>();
+        var started = CompletableFuture.supplyAsync(() -> startAttempts(interruption), Container::runOnThreadOfItsOwn);
+
+        Optional<RuntimeException> failure;
+        try {
+            failure = started.get();
+        } catch (InterruptedException ex) {
+            interruption.set(ex);
+            failure = started.completeOnTimeout(
+                            Optional.of(interrupted(ex)), INTERRUPT_GRACE_PERIOD.toNanos(), TimeUnit.NANOSECONDS)
+                    .join();
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException ex) {
+            // The start returns every failure it handles, so only an error
+            // that it does not handle ends up here, which is passed on as
+            // CompletableFuture.join() would pass it on.
+            throw new CompletionException(ex.getCause());
+        }
+
+        failure.ifPresent(startFailure -> {
+            throw startFailure;
+        });
     }
 
     private static void runOnThreadOfItsOwn(Runnable task) {
@@ -230,11 +264,11 @@ public final class Container extends GenericContainer<Container> {
     }
 
     // Starts containers until the database in one of them becomes reachable,
-    // and returns the failure otherwise. It pulls the image before the first
-    // attempt, so that pulling it does not count toward the startup timeout.
-    // Testcontainers keeps the image it resolved, so the attempts do not pull
-    // it again.
-    private Optional<RuntimeException> startAttempts() {
+    // and returns the failure otherwise, or once the given interruption of
+    // the caller is set. It pulls the image before the first attempt, so that
+    // pulling it does not count toward the startup timeout. Testcontainers
+    // keeps the image it resolved, so the attempts do not pull it again.
+    private Optional<RuntimeException> startAttempts(AtomicReference<@Nullable InterruptedException> interruption) {
         try {
             getDockerImageName();
         } catch (RuntimeException ex) {
@@ -243,13 +277,20 @@ public final class Container extends GenericContainer<Container> {
 
         var removalFailures = new ArrayList<RuntimeException>();
         for (var attemptNumber = 1; ; attemptNumber++) {
-            var currentAttempt = new Attempt(startupTimeout);
+            var currentAttempt = new Attempt(startupTimeout, () -> interruption.get() != null);
             var failure = startContainerOf(currentAttempt);
             if (failure.isEmpty()) {
                 return Optional.empty();
             }
 
             removeContainersOf(currentAttempt).ifPresent(removalFailures::add);
+
+            // Once the caller was interrupted, the start gives up, whatever
+            // else made the attempt fail.
+            var interruptionOfCaller = interruption.get();
+            if (interruptionOfCaller != null) {
+                return failed(interrupted(interruptionOfCaller), removalFailures);
+            }
 
             var exitLog = currentAttempt.exitLog;
             if (exitLog != null) {
@@ -389,6 +430,10 @@ public final class Container extends GenericContainer<Container> {
                         + MAX_START_ATTEMPTS
                         + " containers",
                 cause);
+    }
+
+    private static IllegalStateException interrupted(InterruptedException cause) {
+        return new IllegalStateException("failed to start the container: interrupted", cause);
     }
 
     private static ContainerLaunchException exited(String exitLog, RuntimeException cause) {

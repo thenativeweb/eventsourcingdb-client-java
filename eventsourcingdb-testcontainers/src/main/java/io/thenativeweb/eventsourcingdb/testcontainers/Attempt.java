@@ -3,6 +3,7 @@ package io.thenativeweb.eventsourcingdb.testcontainers;
 import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntPredicate;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
@@ -23,6 +24,10 @@ final class Attempt {
 
     private final long deadline;
 
+    // Tells whether the start was canceled, e.g. because the caller was
+    // interrupted.
+    private final BooleanSupplier isCanceled;
+
     // Whether the wait for the database began. Testcontainers begins it only
     // once Docker published the port of the container.
     boolean hasWaitBegun;
@@ -37,20 +42,25 @@ final class Attempt {
     @Nullable
     String exitLog;
 
-    Attempt(Duration startupTimeout) {
+    Attempt(Duration startupTimeout, BooleanSupplier isCanceled) {
         deadline = System.nanoTime() + startupTimeout.toNanos();
+        this.isCanceled = isCanceled;
     }
 
-    // Waits until the database answers a ping, until the container exits, or
-    // until the startup timeout runs out. It observes the container anew for
-    // every ping, including the port that Docker published for the database,
-    // as Docker sometimes publishes it late. A failure to observe the
-    // container is one of Docker, which ends the wait at once, and does not
-    // count as running out of time.
+    // Waits until the database answers a ping, until the container exits,
+    // until the startup timeout runs out, or until the start is canceled. It
+    // observes the container anew for every ping, including the port that
+    // Docker published for the database, as Docker sometimes publishes it
+    // late. A failure to observe the container is one of Docker, which ends
+    // the wait at once, and does not count as running out of time.
     void waitUntilReachable(Supplier<Observation> observe, IntPredicate answersPing) {
         hasWaitBegun = true;
 
         while (true) {
+            if (isCanceled.getAsBoolean()) {
+                throw new ContainerLaunchException("the start was canceled");
+            }
+
             var observation = observe.get();
             if (observation.hasExited()) {
                 throw new ContainerLaunchException("the container exited");
