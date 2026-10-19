@@ -231,7 +231,8 @@ public final class Container extends GenericContainer<Container> {
      * <p>If the calling thread is interrupted before the instance answers pings, the start gives up, removes the
      * containers of its attempt, and throws an {@link IllegalStateException}, and the interrupt status stays set. As
      * Docker may still create a container for a call that the interrupt cut short, the start looks for containers to
-     * remove once more a few seconds later, in the background.
+     * remove once more a few seconds later, in the background. Testcontainers pulls the image again after an interrupt,
+     * though, and clears the interrupt status, so an interrupt while it pulls the image can get lost.
      *
      * @throws IllegalStateException if the database did not become reachable in any of three containers
      * @throws RuntimeException if the container does not start for another reason, e.g. because the image does not
