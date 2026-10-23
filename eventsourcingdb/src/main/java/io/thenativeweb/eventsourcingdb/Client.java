@@ -177,11 +177,11 @@ public final class Client implements AutoCloseable {
      * @throws DbApiException with the code {@link ErrorCode#PRECONDITION_VIOLATED} if a precondition does not hold, or
      *     {@link ErrorCode#EVENT_SCHEMA_VIOLATED} if an event does not match the schema of its type
      * @throws OutcomeUnknownException if writing failed in a way that leaves open whether the events were written
+     * @throws IncompatibleServerException if a precondition is recursive, and the server does not offer the v2 API,
+     *     which a recursive precondition needs; the events are not written then
      */
     public List<Event> writeEvents(List<EventCandidate> events, List<Precondition> preconditions) {
-        var body = Json.MAPPER.createObjectNode();
-
-        var eventsNode = body.putArray("events");
+        var eventsNode = Json.MAPPER.createArrayNode();
         for (var event : events) {
             var eventNode = eventsNode.addObject();
             eventNode.put("source", event.source());
@@ -197,31 +197,7 @@ public final class Client implements AutoCloseable {
             }
         }
 
-        if (!preconditions.isEmpty()) {
-            var preconditionsNode = body.putArray("preconditions");
-            for (var precondition : preconditions) {
-                preconditionsNode.add(Json.MAPPER.valueToTree(toRequest(precondition)));
-            }
-        }
-
-        return send("write events", transport -> transport.writeEvents(body));
-    }
-
-    private static Map<String, Object> toRequest(Precondition precondition) {
-        return switch (precondition) {
-            case IsSubjectPristinePrecondition pristinePrecondition ->
-                Map.of("type", "isSubjectPristine", "payload", Map.of("subject", pristinePrecondition.subject()));
-            case IsSubjectPopulatedPrecondition populatedPrecondition ->
-                Map.of("type", "isSubjectPopulated", "payload", Map.of("subject", populatedPrecondition.subject()));
-            case IsSubjectOnEventIdPrecondition onEventIdPrecondition ->
-                Map.of(
-                        "type",
-                        "isSubjectOnEventId",
-                        "payload",
-                        Map.of("subject", onEventIdPrecondition.subject(), "eventId", onEventIdPrecondition.eventId()));
-            case IsEventQlQueryTruePrecondition queryPrecondition ->
-                Map.of("type", "isEventQlQueryTrue", "payload", Map.of("query", queryPrecondition.query()));
-        };
+        return send("write events", transport -> transport.writeEvents(eventsNode, preconditions));
     }
 
     /**

@@ -6,6 +6,7 @@ import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 // V1Transport sends the requests of the client through the v1 API, for a
@@ -44,8 +45,18 @@ final class V1Transport implements Transport {
         }
     }
 
+    // The v1 API knows no options of preconditions. A precondition that is
+    // not recursive means the same without them, but a recursive one can not
+    // be checked at all, so the write fails before it is sent, rather than
+    // checking less than it asks for.
     @Override
-    public List<Event> writeEvents(ObjectNode body) {
+    public List<Event> writeEvents(ArrayNode events, List<Precondition> preconditions) {
+        if (preconditions.stream().anyMatch(WriteEventsBody::isRecursive)) {
+            throw new IncompatibleServerException();
+        }
+
+        var body = WriteEventsBody.withoutPreconditionOptions(events, preconditions);
+
         return requests.write(
                 "write events",
                 requests.post("/api/v1/write-events", body),

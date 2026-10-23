@@ -3,6 +3,7 @@ package io.thenativeweb.eventsourcingdb;
 import java.util.List;
 import java.util.function.Function;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 // Transport sends the requests of the client through one API of the server.
@@ -14,7 +15,10 @@ sealed interface Transport permits V1Transport, V2Transport {
 
     void verifyApiToken();
 
-    List<Event> writeEvents(ObjectNode body);
+    // The APIs take the preconditions of a write in shapes of their own, see
+    // WriteEventsBody, so the client hands them over as they are, along with
+    // the events, which both APIs take alike.
+    List<Event> writeEvents(ArrayNode events, List<Precondition> preconditions);
 
     StreamSpec<Event> readEvents(ObjectNode body);
 

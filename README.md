@@ -205,6 +205,25 @@ var writtenEvents = client.writeEvents(
 
 *Note that the query must return a single row with a single value, which is interpreted as a boolean.*
 
+#### Using Preconditions Recursively
+
+If you want the `isSubjectPristine`, `isSubjectPopulated`, or `isSubjectOnEventId` precondition to apply not only to a subject, but also to all of its nested subjects, pass `PreconditionOptions` with the `recursive` option set to `true` as the last argument:
+
+```java
+var writtenEvents = client.writeEvents(
+  List.of(
+    // ...
+  ),
+  List.of(
+    new IsSubjectPristinePrecondition("/books/42", new PreconditionOptions(true))
+  )
+);
+```
+
+The `isSubjectPristine` precondition then holds if neither the subject nor any of its nested subjects has an event, the `isSubjectPopulated` precondition holds if any of them has one, and the `isSubjectOnEventId` precondition holds if the last event among all of them has the given ID.
+
+*Note that only a server that offers the v2 API can check a recursive precondition. If the server does not offer it, the client throws an `IncompatibleServerException` without sending the write, so no events are written.*
+
 #### Aborting Writing
 
 To abort writing, e.g. if the server does not answer in time, interrupt the thread that writes. For example, run the call as a task, and cancel the task if it takes too long:
@@ -736,6 +755,8 @@ try {
   // ...
 }
 ```
+
+If a write has a recursive precondition, and the server does not offer the v2 API, which a recursive precondition needs, the client throws an `IncompatibleServerException` without sending the write. For details, see [Using Preconditions Recursively](#using-preconditions-recursively).
 
 If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`, and if the hash of the event is of a version the client does not know, an `UnsupportedHashVersionException`. A signature that is not hexadecimal throws an `IllegalArgumentException` instead. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
 
