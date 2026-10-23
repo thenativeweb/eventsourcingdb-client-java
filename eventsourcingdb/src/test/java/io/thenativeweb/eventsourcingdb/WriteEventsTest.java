@@ -33,8 +33,45 @@ class WriteEventsTest {
     }
 
     private static EventCandidate candidate(int value) {
+        return candidate("/test", value);
+    }
+
+    private static EventCandidate candidate(String subject, int value) {
         return new EventCandidate(
-                "https://www.eventsourcingdb.io", "/test", "io.eventsourcingdb.test", new EventData(value));
+                "https://www.eventsourcingdb.io", subject, "io.eventsourcingdb.test", new EventData(value));
+    }
+
+    private void assertHolds(Precondition precondition) {
+        var writtenEvents = client.writeEvents(List.of(candidate(42)), List.of(precondition));
+        assertEquals(1, writtenEvents.size());
+    }
+
+    private void assertViolated(Precondition precondition) {
+        var exception = assertThrows(
+                DbApiException.class, () -> client.writeEvents(List.of(candidate(42)), List.of(precondition)));
+        assertEquals(ErrorCode.PRECONDITION_VIOLATED, exception.code());
+    }
+
+    // A server without the v2 API can not check a recursive precondition, so
+    // the client refuses the write without sending it. The tests hand over a
+    // precondition that holds on the subject alone, so that a write sent
+    // without the options would be stored.
+    private void assertRefusedWithoutTheV2Api(Precondition precondition) {
+        var eventCount = countEvents();
+
+        var exception = assertThrows(
+                IncompatibleServerException.class,
+                () -> client.writeEvents(List.of(candidate(42)), List.of(precondition)));
+
+        assertEquals(
+                "the server does not offer the v2 API, which a recursive precondition needs", exception.getMessage());
+        assertEquals(eventCount, countEvents());
+    }
+
+    private long countEvents() {
+        try (var events = client.readEvents("/", new ReadEventsOptions(true))) {
+            return events.count();
+        }
     }
 
     @Test
@@ -138,6 +175,83 @@ class WriteEventsTest {
         var writtenEvents =
                 client.writeEvents(List.of(candidate(42)), List.of(new IsSubjectOnEventIdPrecondition("/test", "0")));
         assertEquals(1, writtenEvents.size());
+    }
+
+    @Test
+    void supportsTheIsSubjectPristinePreconditionRecursively() {
+        var recursive = new PreconditionOptions(true);
+        client.writeEvents(List.of(candidate("/test/1", 23)));
+
+        // The subject has no events of its own, but a nested subject has.
+        var precondition = new IsSubjectPristinePrecondition("/test", recursive);
+
+        if (Database.offersV2Api(container)) {
+            assertViolated(precondition);
+            assertHolds(new IsSubjectPristinePrecondition("/test/2", recursive));
+        } else {
+            assertRefusedWithoutTheV2Api(precondition);
+        }
+    }
+
+    @Test
+    void supportsTheIsSubjectPopulatedPreconditionRecursively() {
+        var recursive = new PreconditionOptions(true);
+        client.writeEvents(List.of(candidate("/test/1", 23)));
+
+        if (Database.offersV2Api(container)) {
+            assertViolated(new IsSubjectPopulatedPrecondition("/test/2", recursive));
+
+            // The subject has no events of its own, but a nested subject has.
+            assertHolds(new IsSubjectPopulatedPrecondition("/test", recursive));
+        } else {
+            assertRefusedWithoutTheV2Api(new IsSubjectPopulatedPrecondition("/test/1", recursive));
+        }
+    }
+
+    @Test
+    void supportsTheIsSubjectOnEventIdPreconditionRecursively() {
+        var recursive = new PreconditionOptions(true);
+        client.writeEvents(List.of(candidate("/test", 23)));
+        client.writeEvents(List.of(candidate("/test/1", 42)));
+
+        // The last event of the subject itself is 0, but the last event among
+        // the subject and its nested subjects is 1.
+        var precondition = new IsSubjectOnEventIdPrecondition("/test", "0", recursive);
+
+        if (Database.offersV2Api(container)) {
+            assertViolated(precondition);
+            assertHolds(new IsSubjectOnEventIdPrecondition("/test", "1", recursive));
+        } else {
+            assertRefusedWithoutTheV2Api(precondition);
+        }
+    }
+
+    @Test
+    void supportsTheIsSubjectPristinePreconditionWithOptionsThatAreNotRecursive() {
+        var notRecursive = new PreconditionOptions(false);
+        client.writeEvents(List.of(candidate("/test/1", 23)));
+
+        assertHolds(new IsSubjectPristinePrecondition("/test", notRecursive));
+        assertViolated(new IsSubjectPristinePrecondition("/test", notRecursive));
+    }
+
+    @Test
+    void supportsTheIsSubjectPopulatedPreconditionWithOptionsThatAreNotRecursive() {
+        var notRecursive = new PreconditionOptions(false);
+        client.writeEvents(List.of(candidate("/test/1", 23)));
+
+        assertViolated(new IsSubjectPopulatedPrecondition("/test", notRecursive));
+        assertHolds(new IsSubjectPopulatedPrecondition("/test/1", notRecursive));
+    }
+
+    @Test
+    void supportsTheIsSubjectOnEventIdPreconditionWithOptionsThatAreNotRecursive() {
+        var notRecursive = new PreconditionOptions(false);
+        client.writeEvents(List.of(candidate("/test", 23)));
+        client.writeEvents(List.of(candidate("/test/1", 42)));
+
+        assertViolated(new IsSubjectOnEventIdPrecondition("/test", "1", notRecursive));
+        assertHolds(new IsSubjectOnEventIdPrecondition("/test", "0", notRecursive));
     }
 
     @Test

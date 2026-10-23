@@ -6,6 +6,7 @@ import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 // V2Transport sends the requests of the client through the v2 API. It reads
@@ -54,8 +55,9 @@ final class V2Transport implements Transport {
     }
 
     @Override
-    public List<Event> writeEvents(ObjectNode body) {
+    public List<Event> writeEvents(ArrayNode events, List<Precondition> preconditions) {
         var action = "write events";
+        var body = WriteEventsBody.withPreconditionOptions(events, preconditions);
 
         return requests.write(
                 action,
