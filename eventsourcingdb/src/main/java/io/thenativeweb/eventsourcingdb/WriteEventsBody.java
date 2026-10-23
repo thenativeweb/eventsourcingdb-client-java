@@ -7,8 +7,9 @@ import tools.jackson.databind.node.ObjectNode;
 
 // WriteEventsBody builds the body of a write, which both APIs take alike, but
 // for the options of the preconditions on a subject, which only the v2 API
-// knows. A precondition is sent with options only if it has any, so that one
-// without them is sent exactly as it was before there were options.
+// knows. A precondition is sent with options only if it has any, since a
+// server that offers the v2 API, but does not know the options yet, refuses
+// them as a field it does not know.
 final class WriteEventsBody {
     private WriteEventsBody() {}
 
