@@ -23,9 +23,10 @@ import tools.jackson.core.JacksonException;
 // The answer is kept for the client, so the server is asked only once.
 //
 // Any other outcome, e.g. a server that can not be reached, tells nothing, so
-// the request that asked fails, and the next request asks again. Requests
-// that are made while the server is being asked wait for its answer rather
-// than asking again, and fail along with it, each with its own action.
+// the request that asked fails, and the next request asks again, unless the
+// client still keeps an earlier answer. Requests that are made while the
+// server is being asked, and that find no answer kept, wait for its answer
+// rather than asking again, and fail along with it, each with its own action.
 //
 // A server that answers a request through the v2 API with 404 or 405 does not
 // offer it any longer, e.g. because it was rolled back to a version without
@@ -34,7 +35,9 @@ import tools.jackson.core.JacksonException;
 // A server that did not offer the v2 API when the client asked may have been
 // upgraded to a version with it since. Only a write with a recursive
 // precondition needs the v2 API, so such a write asks again before the client
-// refuses it, unless the write itself was the request that asked.
+// refuses it, unless the write waited for a probe itself. Every other request
+// keeps the answer meanwhile, which stays if asking again fails, and is
+// replaced once the server answers.
 final class TransportChooser {
     private static final String PROBE_PATH = "/api/v2/system/ping";
 
@@ -73,12 +76,7 @@ final class TransportChooser {
                 return CompletableFuture.completedFuture(chosen);
             }
 
-            var probe = this.probe;
-            if (probe == null) {
-                probe = startProbe();
-            }
-
-            return probe.copy();
+            return startOrJoinProbe();
         }
     }
 
@@ -111,28 +109,35 @@ final class TransportChooser {
             return;
         }
 
-        forget(choice);
-    }
-
-    // Asks the server again which API it offers, for a request that was sent
-    // under the given answer, and returns the choice as transport() does. As
-    // above, only the answer that the request was sent under is forgotten, so
-    // that requests that ask again at the same time share one probe, and a
-    // request that asks again after another one did takes its answer.
-    CompletableFuture<Choice> askAgain(Choice choice) {
-        synchronized (lock) {
-            forget(choice);
-            return transport();
-        }
-    }
-
-    private void forget(Choice choice) {
         synchronized (lock) {
             var chosen = this.chosen;
             if (chosen != null && chosen.generation() == choice.generation()) {
                 this.chosen = null;
             }
         }
+    }
+
+    // Asks the server again which API it offers, and returns the choice once
+    // the server answers. The answer stays kept meanwhile, so that every other
+    // request keeps using it rather than waiting, and so that it stays if
+    // asking fails. A request that asks again while a probe is running shares
+    // that probe.
+    CompletableFuture<Choice> askAgain() {
+        synchronized (lock) {
+            return startOrJoinProbe();
+        }
+    }
+
+    // Starts a probe, unless one is running already, and returns a future of
+    // its answer that is the caller's own, so that canceling it ends only the
+    // wait of the caller. It is called under the lock, as startProbe is.
+    private CompletableFuture<Choice> startOrJoinProbe() {
+        var probe = this.probe;
+        if (probe == null) {
+            probe = startProbe();
+        }
+
+        return probe.copy();
     }
 
     // Tells whether a request failed because the server answered it with a
@@ -194,10 +199,11 @@ final class TransportChooser {
     }
 
     // Keeps the transport that the probe found out, as an answer of a
-    // generation of its own, or forgets the probe if it failed, so that the
-    // next request probes again. Either way, a probe is running no longer. A
-    // probe starts only while no other is running, so the probe that
-    // completes is the one that is kept.
+    // generation of its own, in place of the one kept before, if any, or
+    // forgets the probe if it failed, which leaves the answer kept before, so
+    // that the next request probes again only if there is none. Either way, a
+    // probe is running no longer. A probe starts only while no other is
+    // running, so the probe that completes is the one that is kept.
     private void complete(
             CompletableFuture<Choice> result,
             @Nullable HttpResponse<String> answer,
