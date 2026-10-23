@@ -325,7 +325,8 @@ class ProbeTest {
                 fail("a request ended without waiting for the probe");
             }
             if (System.nanoTime() - deadline > 0) {
-                fail("the requests did not all wait for the probe within " + WAITING_DEADLINE + ", their threads are "
+                fail("the requests did not all wait for the probe within " + Durations.describe(WAITING_DEADLINE)
+                        + ", their threads are "
                         + threads.stream().map(Thread::getState).toList());
             }
             Thread.onSpinWait();
