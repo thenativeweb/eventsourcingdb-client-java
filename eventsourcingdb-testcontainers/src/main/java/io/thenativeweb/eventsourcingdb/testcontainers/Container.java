@@ -78,9 +78,14 @@ public final class Container extends GenericContainer<Container> {
     // container that exited.
     static final int LOG_TAIL_LINES = 20;
 
+    // The paths of the pings of the v2 and the v1 API, neither of which
+    // needs the API token.
+    private static final String V2_PING_PATH = "/api/v2/system/ping";
+    private static final String V1_PING_PATH = "/api/v1/ping";
+
     // How long a ping of the database may take before it counts as
     // unanswered.
-    private static final Duration PING_TIMEOUT = Duration.ofSeconds(1);
+    static final Duration PING_TIMEOUT = Duration.ofSeconds(1);
 
     // How long after an interrupt ended a start the containers of its attempt
     // are looked for once more. The interrupt cuts a call to Docker short, and
@@ -333,8 +338,7 @@ public final class Container extends GenericContainer<Container> {
             Objects.requireNonNull(attempt)
                     .waitUntilReachable(
                             this::observe,
-                            port -> answersPing(
-                                    httpClient, URI.create("http://" + super.getHost() + ":" + port + "/api/v1/ping")));
+                            port -> answersPing(httpClient, URI.create("http://" + super.getHost() + ":" + port)));
         }
     }
 
@@ -356,20 +360,37 @@ public final class Container extends GenericContainer<Container> {
                         .orElse(null));
     }
 
-    // Tells whether the database answers a ping with 200 OK. Any other
-    // answer, and no answer at all, mean that it is not reachable yet.
-    static boolean answersPing(HttpClient httpClient, URI pingUrl) {
-        var request = HttpRequest.newBuilder(pingUrl).timeout(PING_TIMEOUT).build();
-
+    // Tells whether the database answers a ping with 200 OK. It pings the v2
+    // API, and the v1 API only if the server answers that with 404 or 405, as
+    // a server without the v2 API does, so that the wait works against
+    // servers with either API, or both. Any other answer, and no answer at
+    // all, tell nothing about the API, and mean only that the database is not
+    // reachable yet. Each call starts with the v2 API, rather than
+    // remembering that the server had none: that costs one more ping per call
+    // against such a server, and spares the calls any state that they share.
+    static boolean answersPing(HttpClient httpClient, URI baseUrl) {
         try {
-            return httpClient
-                            .sendAsync(request, HttpResponse.BodyHandlers.discarding())
-                            .join()
-                            .statusCode()
-                    == 200;
+            return switch (statusOfPing(httpClient, baseUrl.resolve(V2_PING_PATH))) {
+                case 200 -> true;
+                case 404, 405 -> statusOfPing(httpClient, baseUrl.resolve(V1_PING_PATH)) == 200;
+                default -> false;
+            };
         } catch (CompletionException ex) {
             return false;
         }
+    }
+
+    // Returns the status code of the answer to a ping, and throws a
+    // CompletionException if no answer arrives, e.g. because the connection
+    // is refused while the database starts, or because the answer takes
+    // longer than the ping may.
+    private static int statusOfPing(HttpClient httpClient, URI pingUrl) {
+        var request = HttpRequest.newBuilder(pingUrl).timeout(PING_TIMEOUT).build();
+
+        return httpClient
+                .sendAsync(request, HttpResponse.BodyHandlers.discarding())
+                .join()
+                .statusCode();
     }
 
     // Testcontainers calls this before it removes a container, also one whose

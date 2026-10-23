@@ -22,17 +22,23 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.ContainerFetchException;
 import org.testcontainers.containers.ContainerLaunchException;
@@ -53,6 +59,14 @@ class ContainerTest {
 
     private static final String EXITED_PREFIX =
             "failed to start the container, it exited before the database became reachable: ";
+
+    private static final String V1_PING_PATH = "/api/v1/ping";
+    private static final String V2_PING_PATH = "/api/v2/system/ping";
+
+    // How long a test waits for a fake database, which answers at once,
+    // except for a ping it answers too late, so that a wait that never ends
+    // fails within seconds.
+    private static final Duration FAKE_DATABASE_STARTUP_TIMEOUT = Container.PING_TIMEOUT.multipliedBy(5);
 
     @Test
     void startsHandsOutAClientAndStops() {
@@ -683,10 +697,65 @@ class ContainerTest {
 
     @Test
     void takesOnly200OkAsAnAnswerToAPing() throws IOException {
-        assertTrue(answersPingWith(200));
-        assertFalse(answersPingWith(204));
-        assertFalse(answersPingWith(503));
+        assertTrue(answersPingWith(Map.of(V2_PING_PATH, answers(200))));
+        assertFalse(answersPingWith(Map.of(V2_PING_PATH, answers(204))));
+        assertFalse(answersPingWith(Map.of(V2_PING_PATH, answers(404), V1_PING_PATH, answers(204))));
         assertFalse(answersPingWithoutServer());
+    }
+
+    // A server without the v2 API, such as EventSourcingDB 1.2, answers its
+    // ping with 404 or 405.
+    @ParameterizedTest
+    @ValueSource(ints = {404, 405})
+    void waitsThroughTheV1PingIfTheServerHasNoV2Api(int statusCode) throws IOException {
+        var pingedPaths = pingUntilReachable(Map.of(V2_PING_PATH, answers(statusCode), V1_PING_PATH, answers(200)));
+
+        assertEquals(List.of(V2_PING_PATH, V1_PING_PATH), pingedPaths);
+    }
+
+    @Test
+    void waitsThroughTheV2PingWithoutAskingTheV1Ping() throws IOException {
+        var pingedPaths = pingUntilReachable(Map.of(V2_PING_PATH, answers(200), V1_PING_PATH, answers(200)));
+
+        assertEquals(List.of(V2_PING_PATH), pingedPaths);
+    }
+
+    // A server without the v1 API answers its ping with 404.
+    @Test
+    void waitsThroughTheV2PingIfTheServerHasNoV1Api() throws IOException {
+        var pingedPaths = pingUntilReachable(Map.of(V2_PING_PATH, answers(200), V1_PING_PATH, answers(404)));
+
+        assertEquals(List.of(V2_PING_PATH), pingedPaths);
+    }
+
+    // Only 404 and 405 tell that the server has no v2 API. Any other answer
+    // to the v2 ping tells only that the database is not reachable yet.
+    @Test
+    void pingsTheV2ApiAgainWithoutAskingTheV1PingIfTheV2PingFails() throws IOException {
+        var pingedPaths = pingUntilReachable(Map.of(V2_PING_PATH, answers(503, 200), V1_PING_PATH, answers(200)));
+
+        assertEquals(List.of(V2_PING_PATH, V2_PING_PATH), pingedPaths);
+    }
+
+    // The fake database answers the first v2 ping with 404 once the ping
+    // gave up on it, which would lead to the v1 ping if the wait took it.
+    @Test
+    void pingsTheV2ApiAgainWithoutAskingTheV1PingIfTheV2PingIsNotAnsweredInTime() throws IOException {
+        var lateAnswer = new Answer(404, Container.PING_TIMEOUT.multipliedBy(2));
+
+        var pingedPaths = pingUntilReachable(
+                Map.of(V2_PING_PATH, List.of(lateAnswer, new Answer(200, Duration.ZERO)), V1_PING_PATH, answers(200)));
+
+        assertEquals(List.of(V2_PING_PATH, V2_PING_PATH), pingedPaths);
+    }
+
+    // Each call of answersPing asks the v2 API first, rather than
+    // remembering that the server did not offer it.
+    @Test
+    void startsEachCallWithTheV2Ping() throws IOException {
+        var pingedPaths = pingUntilReachable(Map.of(V2_PING_PATH, answers(404), V1_PING_PATH, answers(503, 200)));
+
+        assertEquals(List.of(V2_PING_PATH, V1_PING_PATH, V2_PING_PATH, V1_PING_PATH), pingedPaths);
     }
 
     @Test
@@ -798,22 +867,12 @@ class ContainerTest {
         return innermostCause;
     }
 
-    // Pings a server that answers with the given status code, on the same
-    // path as the database.
-    private static boolean answersPingWith(int statusCode) throws IOException {
-        var server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-        server.createContext("/api/v1/ping", exchange -> {
-            exchange.sendResponseHeaders(statusCode, -1);
-            exchange.close();
-        });
-        server.start();
-
-        try (var httpClient = HttpClient.newHttpClient()) {
-            return Container.answersPing(
-                    httpClient,
-                    URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/api/v1/ping"));
-        } finally {
-            server.stop(0);
+    // Asks a fake database with the given answers whether it answers a
+    // ping, once.
+    private static boolean answersPingWith(Map<String, List<Answer>> answers) throws IOException {
+        try (var database = new FakeDatabase(answers);
+                var httpClient = HttpClient.newHttpClient()) {
+            return Container.answersPing(httpClient, URI.create("http://127.0.0.1:" + database.port()));
         }
     }
 
@@ -826,7 +885,71 @@ class ContainerTest {
         }
 
         try (var httpClient = HttpClient.newHttpClient()) {
-            return Container.answersPing(httpClient, URI.create("http://127.0.0.1:" + port + "/api/v1/ping"));
+            return Container.answersPing(httpClient, URI.create("http://127.0.0.1:" + port));
+        }
+    }
+
+    // Waits for a fake database with the given answers, as the start waits
+    // for the database in a container, and returns the paths of the pings in
+    // the order they arrived.
+    private static List<String> pingUntilReachable(Map<String, List<Answer>> answers) throws IOException {
+        try (var database = new FakeDatabase(answers);
+                var httpClient = HttpClient.newHttpClient()) {
+            new Attempt(FAKE_DATABASE_STARTUP_TIMEOUT)
+                    .waitUntilReachable(
+                            () -> new Attempt.Observation(false, database.port()),
+                            port -> Container.answersPing(httpClient, URI.create("http://127.0.0.1:" + port)));
+
+            return List.copyOf(database.pingedPaths);
+        }
+    }
+
+    private static List<Answer> answers(int... statusCodes) {
+        return Arrays.stream(statusCodes)
+                .mapToObj(statusCode -> new Answer(statusCode, Duration.ZERO))
+                .toList();
+    }
+
+    // An answer of the fake database to a ping, which it sends after the
+    // given delay.
+    private record Answer(int statusCode, Duration delay) {}
+
+    // A server in place of the database, which gives the answers of a path
+    // to its pings in turn, the last one to every ping once the others ran
+    // out, and which notes the path of each ping as it arrives. Each ping
+    // runs on a thread of its own, so that a late answer neither holds up
+    // the next ping nor holds up stopping the server.
+    private static final class FakeDatabase implements AutoCloseable {
+        private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        private final HttpServer server;
+        final List<String> pingedPaths = new CopyOnWriteArrayList<>();
+
+        FakeDatabase(Map<String, List<Answer>> answers) throws IOException {
+            server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+            answers.forEach((path, pathAnswers) -> {
+                var remainingAnswers = new ConcurrentLinkedDeque<>(pathAnswers);
+                server.createContext(path, exchange -> {
+                    pingedPaths.add(exchange.getRequestURI().getPath());
+
+                    var answer =
+                            remainingAnswers.size() > 1 ? remainingAnswers.removeFirst() : remainingAnswers.getFirst();
+                    pause(answer.delay());
+                    exchange.sendResponseHeaders(answer.statusCode(), -1);
+                    exchange.close();
+                });
+            });
+            server.setExecutor(executor);
+            server.start();
+        }
+
+        int port() {
+            return server.getAddress().getPort();
+        }
+
+        @Override
+        public void close() {
+            server.stop(0);
+            executor.shutdown();
         }
     }
 }
