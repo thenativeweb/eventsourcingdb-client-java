@@ -12,8 +12,9 @@ package io.thenativeweb.eventsourcingdb;
  * the request, even while the client was still connecting to the server.
  *
  * <p>A write that certainly was not stored throws the failure itself instead: an {@link EventSourcingDbException} if
- * the client could not connect to the server at all, and a {@link DbApiException} if the server refused the write,
- * e.g. because a precondition does not hold.
+ * the client could not connect to the server at all, a {@link DbApiException} if the server refused the write, e.g.
+ * because a precondition does not hold, and an {@link IncompatibleServerException} if the client refused the write
+ * before sending it, because it has a recursive precondition that the server can not check.
  */
 public final class OutcomeUnknownException extends EventSourcingDbException {
     private static final long serialVersionUID = 1L;

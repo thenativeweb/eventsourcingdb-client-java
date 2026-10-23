@@ -64,7 +64,7 @@ client.verifyApiToken();
 
 ### Talking to Servers With and Without the v2 API
 
-The client works with servers that offer the v2 API, and with servers that do not, such as EventSourcingDB 1.2.0. Creating a client sends no request. The first request of a client asks the server whether it offers the v2 API, and the client remembers the answer: from then on, it uses the v2 API if the server offers it, and the v1 API otherwise. If asking fails, e.g. because the server can not be reached, the first request fails, and the next one asks again. If the server answers a path of the v2 API with 404 or 405, e.g. after it was rolled back to a version without it, the client asks again on the next request.
+The client works with servers that offer the v2 API, and with servers that do not, such as EventSourcingDB 1.2.0. Creating a client sends no request. The first request of a client asks the server whether it offers the v2 API, and the client remembers the answer: from then on, it uses the v2 API if the server offers it, and the v1 API otherwise. If asking fails, e.g. because the server can not be reached, the request that asked fails, and the next one asks again. If the server answers a path of the v2 API with 404 or 405, e.g. after it was rolled back to a version without it, the client asks again on the next request. And if the client remembers that the server does not offer the v2 API, it asks again before it refuses a write with a recursive precondition, which only the v2 API can check, since the server may have been upgraded meanwhile. For details, see [Using Preconditions Recursively](#using-preconditions-recursively).
 
 The v2 API reads with the HTTP method `QUERY` ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)), which carries a body, as `POST` does, but changes nothing. If a proxy, a load balancer, or a firewall sits in front of the database, it has to let `QUERY` through. The client does not fall back to `POST`.
 
@@ -222,7 +222,7 @@ var writtenEvents = client.writeEvents(
 
 The `isSubjectPristine` precondition then holds if neither the subject nor any of its nested subjects has an event, the `isSubjectPopulated` precondition holds if any of them has one, and the `isSubjectOnEventId` precondition holds if the last event among all of them has the given ID.
 
-*Note that only a server that offers the v2 API can check a recursive precondition. If the server does not offer it, the client throws an `IncompatibleServerException` without sending the write, so no events are written.*
+*Note that only a server that offers the v2 API can check a recursive precondition. If the client remembers from an earlier request that the server does not offer it, it asks the server again before the write, since the server may have been upgraded meanwhile, and writes through the v2 API if the server offers it now. If the server does not offer the v2 API, the client throws an `IncompatibleServerException` without sending the write, so no events are written.*
 
 #### Aborting Writing
 
@@ -756,7 +756,7 @@ try {
 }
 ```
 
-If a write has a recursive precondition, and the server does not offer the v2 API, which a recursive precondition needs, the client throws an `IncompatibleServerException` without sending the write. For details, see [Using Preconditions Recursively](#using-preconditions-recursively).
+If a write has a recursive precondition, and the server does not offer the v2 API, which a recursive precondition needs, the client throws an `IncompatibleServerException` without sending the write. If the client remembers from an earlier request that the server does not offer it, it asks the server again first. For details, see [Using Preconditions Recursively](#using-preconditions-recursively).
 
 If verifying an event fails, the client throws a `HashVerificationFailedException` or a `SignatureVerificationFailedException`, and if the hash of the event is of a version the client does not know, an `UnsupportedHashVersionException`. A signature that is not hexadecimal throws an `IllegalArgumentException` instead. For details, see [Verifying an Event's Hash](#verifying-an-events-hash) and [Verifying an Event's Signature](#verifying-an-events-signature).
 
@@ -782,7 +782,7 @@ try {
 }
 ```
 
-A write that certainly was not stored throws the failure itself instead: an `EventSourcingDbException` if the client could not connect to the server at all, and a `DbApiException` if the server refused the write, e.g. because a precondition does not hold, or because the client sent too many requests.
+A write that certainly was not stored throws the failure itself instead: an `EventSourcingDbException` if the client could not connect to the server at all, a `DbApiException` if the server refused the write, e.g. because a precondition does not hold, or because the client sent too many requests, and an `IncompatibleServerException` if the client refused the write before sending it, because it has a recursive precondition that the server can not check.
 
 *Note that the networking property `jdk.httpclient.enableAllMethodRetry` of the JDK, set as a system property or in the `conf/net.properties` of the JDK, makes the JDK send a write again if the connection closes before the answer arrives, which can store the write twice. If it is set when a client is created, or when a write fails, the client can not tell a write that could not connect from one that was sent again, so from then on, it throws an `OutcomeUnknownException` for that, too.*
 

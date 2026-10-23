@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import com.sun.net.httpserver.HttpExchange;
 import io.thenativeweb.eventsourcingdb.Operations.Operation;
@@ -306,9 +308,14 @@ class ProbeTest {
     }
 
     // Waits until each of the threads waits, which they do only once they
-    // wait for the probe.
+    // wait for the probe. A thread that ended instead never waited for it, and
+    // would leave the loop spinning, which the timeout of the test can not
+    // interrupt, so that fails the test at once.
     private static void awaitWaiting(List<Thread> threads) {
         while (threads.stream().anyMatch(thread -> thread.getState() != Thread.State.WAITING)) {
+            if (threads.stream().anyMatch(thread -> thread.getState() == Thread.State.TERMINATED)) {
+                fail("a request ended without waiting for the probe");
+            }
             Thread.onSpinWait();
         }
     }
@@ -702,6 +709,134 @@ class ProbeTest {
                     assertInstanceOf(DbApiException.class, outcomes.get("late").orElseThrow());
             assertEquals(404, exception.status());
             assertEquals(2, server.probeCount());
+        }
+    }
+
+    private static final List<EventCandidate> EVENTS =
+            List.of(new EventCandidate("https://x", "/a", "io.x.y", Map.of()));
+
+    private static final List<Precondition> RECURSIVE_PRECONDITIONS =
+            List.of(new IsSubjectPristinePrecondition("/a", new PreconditionOptions(true)));
+
+    private static final String WRITE_PATH_OF_THE_V2_API = "/api/v2/data/write-events";
+
+    // A server that was upgraded to a version with the v2 API answers a write
+    // and the verification of an API token through the v2 API, and the v1 API
+    // as it did before.
+    private static final ProbedServer.Answer UPGRADED = (exchange, server) -> {
+        switch (exchange.getRequestURI().getPath()) {
+            case WRITE_PATH_OF_THE_V2_API ->
+                FakeServer.respond(exchange, 200, Lines.event(ApiVersion.V2) + "\n" + ApiVersion.V2.end() + "\n");
+            case "/api/v2/system/verify-token" ->
+                FakeServer.respond(
+                        exchange,
+                        200,
+                        ApiVersion.V2.item("event", "{\"type\":\"io.eventsourcingdb.api.token-verified\"}"));
+            default -> ProbedServer.answerAsV1(exchange, server);
+        }
+    };
+
+    private static long writeCountOfTheV2Api(ProbedServer server) {
+        return server.paths().stream()
+                .filter(path -> path.equals(WRITE_PATH_OF_THE_V2_API))
+                .count();
+    }
+
+    // A server that did not offer the v2 API when the client asked, and was
+    // upgraded to a version with it afterwards, can check a recursive
+    // precondition. So before the client refuses a write with one, it asks
+    // again, sends the write through the v2 API if the server offers it now,
+    // and keeps the v2 API for the requests that follow.
+    @Test
+    void asksAgainBeforeRefusingARecursivePreconditionAndWritesThroughTheV2ApiIfTheServerOffersItNow() {
+        try (var server = new ProbedServer(UPGRADED, List.of(V1, V2))) {
+            var client = server.client();
+            client.ping();
+
+            var events = client.writeEvents(EVENTS, RECURSIVE_PRECONDITIONS);
+            client.verifyApiToken();
+
+            assertEquals(1, events.size());
+            assertEquals(
+                    List.of(
+                            FakeServer.PROBE_PATH,
+                            "/api/v1/ping",
+                            FakeServer.PROBE_PATH,
+                            WRITE_PATH_OF_THE_V2_API,
+                            "/api/v2/system/verify-token"),
+                    server.paths());
+
+            var write = server.server.requests().stream()
+                    .filter(request -> request.path().equals(WRITE_PATH_OF_THE_V2_API))
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(Json.MAPPER
+                    .readTree(write.body())
+                    .path("preconditions")
+                    .path(0)
+                    .path("payload")
+                    .path("options")
+                    .path("recursive")
+                    .asBoolean());
+        }
+    }
+
+    @Test
+    void refusesARecursivePreconditionIfTheServerStillDoesNotOfferTheV2ApiWhenAskedAgain() {
+        try (var server = new ProbedServer(V1)) {
+            var client = server.client();
+            client.ping();
+
+            assertThrows(IncompatibleServerException.class, () -> client.writeEvents(EVENTS, RECURSIVE_PRECONDITIONS));
+
+            assertEquals(List.of(FakeServer.PROBE_PATH, "/api/v1/ping", FakeServer.PROBE_PATH), server.paths());
+        }
+    }
+
+    // The first request of a client has just asked which API the server
+    // offers, so a write with a recursive precondition does not ask twice.
+    @Test
+    void doesNotAskAgainForARecursivePreconditionOnTheFirstRequest() {
+        try (var server = new ProbedServer(V1)) {
+            var client = server.client();
+
+            assertThrows(IncompatibleServerException.class, () -> client.writeEvents(EVENTS, RECURSIVE_PRECONDITIONS));
+
+            assertEquals(List.of(FakeServer.PROBE_PATH), server.paths());
+        }
+    }
+
+    // Writes with a recursive precondition that are made at the same time
+    // share the probe that asks again, as other requests share a probe, and
+    // each of them is sent once at most.
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void sharesTheProbeThatAsksAgainBetweenWritesWithARecursivePrecondition(boolean isUpgraded)
+            throws InterruptedException {
+        var release = new CountDownLatch(1);
+        var answerAfterTheUpgrade = isUpgraded ? V2 : V1;
+
+        try (var server = new ProbedServer(UPGRADED, List.of(V1, (exchange, fakeServer) -> {
+            release.await();
+            answerAfterTheUpgrade.answer(exchange, fakeServer);
+        }))) {
+            var client = server.client();
+            client.ping();
+
+            Runnable write = () -> client.writeEvents(EVENTS, RECURSIVE_PRECONDITIONS);
+            var outcomes = runWhileTheProbeWaits(release, threads -> {}, List.of(write, write));
+
+            assertEquals(2, server.probeCount());
+            if (isUpgraded) {
+                assertEquals(Map.of(0, Optional.empty(), 1, Optional.empty()), outcomes);
+                assertEquals(2, writeCountOfTheV2Api(server));
+            } else {
+                assertInstanceOf(
+                        IncompatibleServerException.class, outcomes.get(0).orElseThrow());
+                assertInstanceOf(
+                        IncompatibleServerException.class, outcomes.get(1).orElseThrow());
+                assertEquals(0, writeCountOfTheV2Api(server));
+            }
         }
     }
 }

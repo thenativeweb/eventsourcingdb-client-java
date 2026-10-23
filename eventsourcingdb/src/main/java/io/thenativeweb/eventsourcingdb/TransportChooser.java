@@ -30,6 +30,11 @@ import tools.jackson.core.JacksonException;
 // A server that answers a request through the v2 API with 404 or 405 does not
 // offer it any longer, e.g. because it was rolled back to a version without
 // it, so the client forgets the answer, and the next request asks again.
+//
+// A server that did not offer the v2 API when the client asked may have been
+// upgraded to a version with it since. Only a write with a recursive
+// precondition needs the v2 API, so such a write asks again before the client
+// refuses it, unless the write itself was the request that asked.
 final class TransportChooser {
     private static final String PROBE_PATH = "/api/v2/system/ping";
 
@@ -46,8 +51,10 @@ final class TransportChooser {
     // generation of that answer, which counts the answers that probes stored.
     // The generation tells an answer apart from a later one that names the
     // same transport, so that a request can tell which answer it was sent
-    // under.
-    record Choice(Transport transport, long generation) {}
+    // under. A request either finds the answer remembered from an earlier
+    // request, which may be out of date by now, or waits for the probe that
+    // finds it out.
+    record Choice(Transport transport, long generation, boolean isRemembered) {}
 
     TransportChooser(Requests requests, V1Transport v1, V2Transport v2) {
         this.requests = requests;
@@ -104,6 +111,22 @@ final class TransportChooser {
             return;
         }
 
+        forget(choice);
+    }
+
+    // Asks the server again which API it offers, for a request that was sent
+    // under the given answer, and returns the choice as transport() does. As
+    // above, only the answer that the request was sent under is forgotten, so
+    // that requests that ask again at the same time share one probe, and a
+    // request that asks again after another one did takes its answer.
+    CompletableFuture<Choice> askAgain(Choice choice) {
+        synchronized (lock) {
+            forget(choice);
+            return transport();
+        }
+    }
+
+    private void forget(Choice choice) {
         synchronized (lock) {
             var chosen = this.chosen;
             if (chosen != null && chosen.generation() == choice.generation()) {
@@ -191,14 +214,14 @@ final class TransportChooser {
             return;
         }
 
-        Choice choice;
+        long answerGeneration;
         synchronized (lock) {
             generation++;
-            choice = new Choice(transport, generation);
-            chosen = choice;
+            answerGeneration = generation;
+            chosen = new Choice(transport, answerGeneration, true);
             probe = null;
         }
-        result.complete(choice);
+        result.complete(new Choice(transport, answerGeneration, false));
     }
 
     private Transport interpret(

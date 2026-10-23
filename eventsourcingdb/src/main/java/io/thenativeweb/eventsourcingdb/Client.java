@@ -19,9 +19,12 @@ import tools.jackson.databind.node.ObjectNode;
  * <p>The client talks to every supported version of EventSourcingDB, whether it offers the v2 API or not. Creating a
  * client sends no request. The first request of a client asks the server whether it offers the v2 API, and the client
  * uses the v2 API from then on if it does, and the v1 API otherwise. If asking fails, e.g. because the server can not
- * be reached, that first request fails, and the next request asks again. If the server answers a path of the v2 API
- * with 404 or 405, e.g. after it was rolled back to a version without it, the next request asks again, too. The v2 API
- * reads with the HTTP method {@code QUERY}, so a proxy in front of the database has to let it through.
+ * be reached, the request that asked fails, and the next request asks again. If the server answers a path of the v2
+ * API with 404 or 405, e.g. after it was rolled back to a version without it, the next request asks again, too. And if
+ * the client remembers that the server does not offer the v2 API, a write with a recursive precondition, which only the
+ * v2 API can check, asks again before the client refuses it, since the server may have been upgraded meanwhile; see
+ * {@link PreconditionOptions}. The v2 API reads with the HTTP method {@code QUERY}, so a proxy in front of the database
+ * has to let it through.
  *
  * <p>Every method that sends a request throws a {@link DbApiException} if the server reports an error, e.g. a
  * precondition that does not hold, and an {@link InvalidServerHeaderException} if the server is not an
@@ -106,13 +109,31 @@ public final class Client implements AutoCloseable {
     }
 
     // Learns which API the server offers, which only the first request of a
-    // client asks the server for, and sends the request through it. How the
-    // request fails may tell that the server does not offer that API any
-    // longer.
+    // client asks the server for, and sends the request through it.
+    //
+    // The v1 API refuses a write with a recursive precondition before it is
+    // sent. The server may have been upgraded to a version with the v2 API
+    // since the client asked, so unless the request asked just now, the
+    // client asks again, and sends the write through the v2 API if the server
+    // offers it now, or refuses it through the v1 API once more otherwise.
     private <T extends @Nullable Object> T send(String action, Function<Transport, T> request) {
         Http.throwIfInterrupted(action);
         var choice = TransportChooser.await(action, transports.transport());
 
+        try {
+            return sendThrough(choice, request);
+        } catch (IncompatibleServerException ex) {
+            if (!choice.isRemembered()) {
+                throw ex;
+            }
+
+            return sendThrough(TransportChooser.await(action, transports.askAgain(choice)), request);
+        }
+    }
+
+    // Sends the request through the transport of the choice. How the request
+    // fails may tell that the server does not offer that API any longer.
+    private <T extends @Nullable Object> T sendThrough(TransportChooser.Choice choice, Function<Transport, T> request) {
         try {
             return request.apply(choice.transport());
         } catch (RuntimeException ex) {
@@ -178,7 +199,7 @@ public final class Client implements AutoCloseable {
      *     {@link ErrorCode#EVENT_SCHEMA_VIOLATED} if an event does not match the schema of its type
      * @throws OutcomeUnknownException if writing failed in a way that leaves open whether the events were written
      * @throws IncompatibleServerException if a precondition is recursive, and the server does not offer the v2 API,
-     *     which a recursive precondition needs; the events are not written then
+     *     which a recursive precondition needs, see {@link PreconditionOptions}; the events are not written then
      */
     public List<Event> writeEvents(List<EventCandidate> events, List<Precondition> preconditions) {
         var eventsNode = Json.MAPPER.createArrayNode();
