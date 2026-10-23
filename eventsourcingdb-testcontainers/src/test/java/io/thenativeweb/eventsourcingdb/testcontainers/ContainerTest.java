@@ -749,10 +749,10 @@ class ContainerTest {
         assertEquals(List.of(V2_PING_PATH, V2_PING_PATH), pingedPaths);
     }
 
-    // Each attempt asks the v2 API first, rather than remembering that the
-    // server did not offer it.
+    // Each call of answersPing asks the v2 API first, rather than
+    // remembering that the server did not offer it.
     @Test
-    void startsEachAttemptWithTheV2Ping() throws IOException {
+    void startsEachCallWithTheV2Ping() throws IOException {
         var pingedPaths = pingUntilReachable(Map.of(V2_PING_PATH, answers(404), V1_PING_PATH, answers(503, 200)));
 
         assertEquals(List.of(V2_PING_PATH, V1_PING_PATH, V2_PING_PATH, V1_PING_PATH), pingedPaths);
@@ -918,7 +918,7 @@ class ContainerTest {
     // to its pings in turn, the last one to every ping once the others ran
     // out, and which notes the path of each ping as it arrives. Each ping
     // runs on a thread of its own, so that a late answer neither holds up
-    // the next ping nor stopping the server.
+    // the next ping nor holds up stopping the server.
     private static final class FakeDatabase implements AutoCloseable {
         private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         private final HttpServer server;

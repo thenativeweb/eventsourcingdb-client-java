@@ -365,10 +365,9 @@ public final class Container extends GenericContainer<Container> {
     // a server without the v2 API does, so that the wait works against
     // servers with either API, or both. Any other answer, and no answer at
     // all, tell nothing about the API, and mean only that the database is not
-    // reachable yet. Every call starts with the v2 API, rather than
-    // remembering that the server had none: that costs one more ping per
-    // attempt against such a server, and spares the attempts any state that
-    // they share.
+    // reachable yet. Each call starts with the v2 API, rather than
+    // remembering that the server had none: that costs one more ping per call
+    // against such a server, and spares the calls any state that they share.
     static boolean answersPing(HttpClient httpClient, URI baseUrl) {
         try {
             return switch (statusOfPing(httpClient, baseUrl.resolve(V2_PING_PATH))) {
