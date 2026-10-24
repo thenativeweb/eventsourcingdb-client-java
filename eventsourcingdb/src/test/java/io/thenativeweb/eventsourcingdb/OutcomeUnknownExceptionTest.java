@@ -56,6 +56,15 @@ class OutcomeUnknownExceptionTest {
         return Operations.writes().stream().map(Arguments::of);
     }
 
+    // The server sends store-failed only for writes that it refuses before
+    // storing them, once its store has failed, so it is a refusal like any
+    // other error.
+    static Stream<Arguments> v2RefusalsWithAnError() {
+        return Operations.writes().stream()
+                .flatMap(operation -> Stream.of(ErrorCode.PRECONDITION_VIOLATED, ErrorCode.STORE_FAILED)
+                        .map(code -> Arguments.of(operation, code)));
+    }
+
     private static Client clientWith(FakeServer server) {
         return new Client(server.url(), "secret", new ClientOptions().withStallTimeout(STALL_TIMEOUT));
     }
@@ -127,31 +136,18 @@ class OutcomeUnknownExceptionTest {
     // The v2 API reports the errors of a write that it accepted within the
     // stream that answers it, after heartbeats, if the write takes long.
     @ParameterizedTest
-    @MethodSource("v2Writes")
-    void reportsAWriteThatTheV2ApiRefusesWithAnErrorAsNotStored(Operation operation) {
-        var error = ApiVersion.V2.item(
-                "error",
-                "{\"code\":\"" + ErrorCode.PRECONDITION_VIOLATED + "\",\"description\":\"refused\",\"details\":{}}");
+    @MethodSource("v2RefusalsWithAnError")
+    void reportsAWriteThatTheV2ApiRefusesWithAnErrorAsNotStored(Operation operation, String code) {
+        var error =
+                ApiVersion.V2.item("error", "{\"code\":\"" + code + "\",\"description\":\"refused\",\"details\":{}}");
 
         try (var server = FakeServer.streaming(ApiVersion.V2, Lines.heartbeat(ApiVersion.V2), error)) {
             var exception =
                     assertThrows(DbApiException.class, () -> operation.call().accept(clientWith(server)));
 
             assertEquals(200, exception.status());
-            assertEquals(ErrorCode.PRECONDITION_VIOLATED, exception.code());
+            assertEquals(code, exception.code());
             assertEquals("refused", exception.description());
-        }
-    }
-
-    // store-failed reports that storing failed halfway, so it may have been
-    // stored nevertheless.
-    @ParameterizedTest
-    @MethodSource("v2Writes")
-    void reportsAWriteThatTheV2ApiFailedToStoreAsUnknown(Operation operation) {
-        try (var server = FakeServer.streaming(ApiVersion.V2, Lines.error(ApiVersion.V2))) {
-            var cause = assertOutcomeUnknown(DbApiException.class, operation, clientWith(server));
-
-            assertEquals(ErrorCode.STORE_FAILED, cause.code());
         }
     }
 

@@ -208,7 +208,7 @@ public final class ErrorCode {
     /** The code {@code restore-in-progress}: a restore is in progress, so the database does not accept the request. */
     public static final String RESTORE_IN_PROGRESS = BASE_URL + "restore-in-progress";
 
-    /** The code {@code store-failed}: the database failed unexpectedly while it handled the request. */
+    /** The code {@code store-failed}: the store has failed before, so it refuses writes until the database is restarted. */
     public static final String STORE_FAILED = BASE_URL + "store-failed";
 
     /** The code {@code indexes-rebuilding}: the database is rebuilding its indexes, so it does not answer the request yet. */
