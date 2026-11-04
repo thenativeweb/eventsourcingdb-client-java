@@ -25,7 +25,7 @@ jobs:
         distribution: temurin
         java-version: '21'
     - name: Use Gradle
-      uses: gradle/actions/setup-gradle@v6.4.0
+      uses: gradle/actions/setup-gradle@v6.4.1
     - name: Run QA
       env:
         EVENTSOURCINGDB_IMAGE_TAG: ${{ matrix.image-tag }}
