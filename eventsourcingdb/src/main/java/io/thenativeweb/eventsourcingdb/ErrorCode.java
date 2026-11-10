@@ -31,6 +31,12 @@ public final class ErrorCode {
     /** The code {@code subject-malformed}: a subject is malformed. */
     public static final String SUBJECT_MALFORMED = BASE_URL + "subject-malformed";
 
+    /** The code {@code subject-too-long}: a subject is longer than the server accepts. */
+    public static final String SUBJECT_TOO_LONG = BASE_URL + "subject-too-long";
+
+    /** The code {@code subject-too-deep}: a subject has more segments than the server accepts. */
+    public static final String SUBJECT_TOO_DEEP = BASE_URL + "subject-too-deep";
+
     /** The code {@code order-unknown}: the order of a read is neither chronological nor antichronological. */
     public static final String ORDER_UNKNOWN = BASE_URL + "order-unknown";
 
@@ -118,6 +124,9 @@ public final class ErrorCode {
     /** The code {@code event-schema-not-object}: a schema does not describe an object. */
     public static final String EVENT_SCHEMA_NOT_OBJECT = BASE_URL + "event-schema-not-object";
 
+    /** The code {@code event-schema-too-complex}: a schema is too complex to validate against, e.g. because it refers back to a part of itself. */
+    public static final String EVENT_SCHEMA_TOO_COMPLEX = BASE_URL + "event-schema-too-complex";
+
     /** The code {@code event-schema-already-registered}: a schema is already registered for the event type. */
     public static final String EVENT_SCHEMA_ALREADY_REGISTERED = BASE_URL + "event-schema-already-registered";
 
@@ -175,6 +184,18 @@ public final class ErrorCode {
     /** The code {@code backup-unreadable}: a backup to restore could not be read to its end. */
     public static final String BACKUP_UNREADABLE = BASE_URL + "backup-unreadable";
 
+    /** The code {@code backup-ahead-of-clock}: an event of a backup to restore lies too far beyond the clock of the server. */
+    public static final String BACKUP_AHEAD_OF_CLOCK = BASE_URL + "backup-ahead-of-clock";
+
+    /** The code {@code import-ahead-of-clock}: an event to import lies too far beyond the clock of the server. */
+    public static final String IMPORT_AHEAD_OF_CLOCK = BASE_URL + "import-ahead-of-clock";
+
+    /** The code {@code import-malformed}: an event to import is malformed. */
+    public static final String IMPORT_MALFORMED = BASE_URL + "import-malformed";
+
+    /** The code {@code import-unreadable}: the events to import could not be read to their end. */
+    public static final String IMPORT_UNREADABLE = BASE_URL + "import-unreadable";
+
     /** The code {@code event-too-large}: an event exceeds the size the server accepts. */
     public static final String EVENT_TOO_LARGE = BASE_URL + "event-too-large";
 
@@ -186,6 +207,12 @@ public final class ErrorCode {
 
     /** The code {@code query-malformed}: an EventQL query is malformed. */
     public static final String QUERY_MALFORMED = BASE_URL + "query-malformed";
+
+    /** The code {@code query-too-deep}: an EventQL query nests deeper, or chains more operands, than the server accepts. */
+    public static final String QUERY_TOO_DEEP = BASE_URL + "query-too-deep";
+
+    /** The code {@code query-too-long}: the EventQL query of a precondition is longer than the server accepts. */
+    public static final String QUERY_TOO_LONG = BASE_URL + "query-too-long";
 
     /** The code {@code query-unevaluable}: an EventQL query can not be evaluated. */
     public static final String QUERY_UNEVALUABLE = BASE_URL + "query-unevaluable";
@@ -216,6 +243,9 @@ public final class ErrorCode {
 
     /** The code {@code server-shutting-down}: the server is shutting down. */
     public static final String SERVER_SHUTTING_DOWN = BASE_URL + "server-shutting-down";
+
+    /** The code {@code file-unreadable}: a file of the store can not be read. */
+    public static final String FILE_UNREADABLE = BASE_URL + "file-unreadable";
 
     private ErrorCode() {}
 }
