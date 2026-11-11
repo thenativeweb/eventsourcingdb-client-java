@@ -12,7 +12,7 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 
-// Sets up the test container the way the README describes it.
+// Sets up the test container the way the documentation describes it.
 @SpringBootTest(classes = ServiceConnectionTest.Application.class)
 @Import(ServiceConnectionTest.ContainerConfiguration.class)
 class ServiceConnectionTest {
