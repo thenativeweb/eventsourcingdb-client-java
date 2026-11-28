@@ -290,8 +290,9 @@ class WriteEventsTest {
 
         assertEquals("write events", exception.action());
         assertEquals(ErrorCode.EVENT_SCHEMA_VIOLATED, exception.code());
-        assertTrue(
-                exception.description().contains("additionalProperties 'extra' not allowed"), exception.description());
+        // The server words the reason itself, and the wording differs between its
+        // versions, but each of them names the property that is not allowed.
+        assertTrue(exception.description().contains("'extra'"), exception.description());
         assertTrue(exception.getMessage().endsWith(exception.description()), exception.getMessage());
     }
 }
